@@ -35,7 +35,7 @@ The app uses Firebase Authentication, Cloud Firestore, Cloud Storage, Cloud Func
 
 ### Host the web app on Vercel with GitHub
 
-The repository root is the app root. Import the GitHub repository into Vercel with the **Other** framework preset and no build command; Vercel serves the static `index.html`, JavaScript, CSS, and app assets directly. Connect the Vercel project to the repository so pushes to `main` deploy automatically. Firebase remains the backend for authentication, database, storage, and existing functions. After the Vercel domain is assigned, add it to Firebase Authentication's authorized domains. If browser uploads or downloads fail, add the Vercel domain to the Storage bucket CORS configuration in `cors.json` and apply the updated CORS policy.
+The repository root is the app root. Import the GitHub repository into Vercel with the **Other** framework preset and no build command; Vercel serves the static `index.html`, JavaScript, CSS, and app assets directly. Connect the Vercel project to the repository so pushes to `main` deploy automatically. Firebase remains the backend for authentication, database, storage, and existing functions. Add `called-to-communicate.vercel.app` to Firebase Authentication's authorized domains. The Storage CORS allowlist is in `cors.json`; apply it to the bucket if browser downloads from Vercel are blocked.
 
 1. Create a Firebase project and register a **Web app** in Firebase Console.
 2. Enable **Email/Password** under Authentication sign-in providers.

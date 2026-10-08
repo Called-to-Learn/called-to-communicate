@@ -3,8 +3,9 @@
     "origin": [
       "http://localhost:4173",
       "http://127.0.0.1:4173",
-      "https://YOUR_PROJECT_ID.web.app",
-      "https://YOUR_PROJECT_ID.firebaseapp.com"
+      "https://called-to-communicate-web.web.app",
+      "https://called-to-communicate-web.firebaseapp.com",
+      "https://called-to-communicate.vercel.app"
     ],
     "method": ["GET"],
     "responseHeader": ["Content-Type"],
