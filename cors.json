@@ -1,0 +1,13 @@
+[
+  {
+    "origin": [
+      "http://localhost:4173",
+      "http://127.0.0.1:4173",
+      "https://YOUR_PROJECT_ID.web.app",
+      "https://YOUR_PROJECT_ID.firebaseapp.com"
+    ],
+    "method": ["GET"],
+    "responseHeader": ["Content-Type"],
+    "maxAgeSeconds": 3600
+  }
+]

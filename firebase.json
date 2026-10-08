@@ -1,0 +1,10 @@
+{
+  "functions": [{ "source": "functions", "codebase": "default" }],
+  "hosting": {
+    "public": ".",
+    "ignore": ["firebase.json", "firestore.rules", "firestore.indexes.json", "storage.rules", "cors.json", "README.md", "functions/**", "**/.*", "**/node_modules/**"],
+    "cleanUrls": true
+  },
+  "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" },
+  "storage": { "rules": "storage.rules" }
+}

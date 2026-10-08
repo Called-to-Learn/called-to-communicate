@@ -1,0 +1,12 @@
+{
+  "name": "Called to Communicate — Called to Learn Academy",
+  "short_name": "Called to Communicate",
+  "description": "School messages, classes, calendar, and family accounts in one place.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f7ff",
+  "theme_color": "#6b38f5",
+  "icons": [
+    { "src": "app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
