@@ -196,6 +196,12 @@ function showToast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => node.classList.remove("show"), 2600);
 }
+function showListenerError(source, error) {
+  console.error(`[Firestore] ${source}`, error);
+  const code = String(error?.code || "").replace(/^firestore\//, "");
+  const detail = code || error?.message || "Unknown error";
+  showToast(`${source}: ${detail}`);
+}
 function roleDetail(role, item = {}) {
   if (item.note) return `${role} · ${item.note}`;
   if (item.tribe) return `${role} · ${item.tribe}`;
@@ -498,7 +504,7 @@ function openClassDetail(id) {
     joinRequestsUnsubscribe = backend.subscribeJoinRequests(id, (requests) => {
       state.classJoinRequests = requests;
       if (state.page === "class-detail" && state.activeClassId === id) render();
-    }, (error) => showToast(error.message || "Could not load class requests."));
+    }, (error) => showListenerError("Class join requests", error));
   }
   state.page = "class-detail";
   render();
@@ -561,7 +567,7 @@ function openChat(id) {
       }));
       persist();
       if (state.page === "chat" && state.activeConversationId === id) render();
-    }, (error) => showToast(error.message || "Could not load messages."));
+    }, (error) => showListenerError("Messages", error));
   }
   persist(); render();
 }
@@ -584,7 +590,7 @@ function connectDataListeners() {
     const accountPrefs = activeIdentityId() === authUser.uid ? userProfile?.notificationPrefs || {} : {};
     state.notificationPrefs = { messages: true, announcements: true, events: true, ...accountPrefs, ...memberPrefs };
     if (state.page === "settings-detail" && state.settingsDetail === "notifications") render();
-  }, (error) => showToast(error.message || "Could not load profile settings."));
+  }, (error) => showListenerError("Profile settings", error));
   conversationUnsubscribe = backend.subscribeConversations(authUser.uid, activeIdentityId(), (items) => {
     state.conversations = items.map((item) => ({
       ...item,
@@ -594,26 +600,26 @@ function connectDataListeners() {
       color: item.color || "purple", members: item.memberNames || []
     }));
     persist(); if (state.page !== "chat") render();
-  }, (error) => showToast(error.message || "Could not load conversations."));
+  }, (error) => showListenerError("Conversation list", error));
   classesUnsubscribe = backend.subscribeClasses(SCHOOL_ID, (items) => {
     state.classes = items.map((item) => ({ ...item, joined: Array.isArray(item.memberProfileIds) ? item.memberProfileIds.includes(activeIdentityId()) : item.memberUids?.includes(authUser.uid) || false, color: item.color || "purple", note: item.description || "Class updates and resources" }));
     persist(); if (state.activeTab === "classes" || state.page === "class-detail") render();
-  }, (error) => showToast(error.message || "Could not load classes."));
+  }, (error) => showListenerError("Classes", error));
   eventsUnsubscribe = backend.subscribeEvents(SCHOOL_ID, activeIdentityId(), (items) => {
     state.events = items.map((item) => ({ ...item, date: item.date, time: item.time, color: item.color || "purple" }));
     persist(); if (state.activeTab === "calendar") render();
-  }, (error) => showToast(error.message || "Could not load events."));
+  }, (error) => showListenerError("Calendar", error));
   directoryUnsubscribe = backend.subscribeDirectory(SCHOOL_ID, (items) => {
     directory = items;
     if (state.page === "new-message" || (state.page === "settings-detail" && state.settingsDetail === "admin")) render();
-  }, (error) => showToast(error.message || "Could not load school directory."));
+  }, (error) => showListenerError("School directory", error));
   if (activeFamilyId) {
     familyUnsubscribe = backend.subscribeFamily(activeFamilyId, (family) => {
       if (family) {
         state.family = { ...state.family, name: family.name || "Family Account", tribe: family.tribe || "Lamanites" };
         persist(); if (state.page === "family" || state.page === "account") render();
       }
-    }, (error) => showToast(error.message || "Could not load family account."));
+    }, (error) => showListenerError("Family account", error));
     const canListFamilyMembers = familyLink?.accountType === "owner" && activeIdentityId() === authUser.uid;
     if (familyLink?.accountType === "linked" || canListFamilyMembers) {
       familyMembersUnsubscribe = backend.subscribeFamilyMembers(activeFamilyId, authUser.uid, canListFamilyMembers, (members) => {
@@ -638,14 +644,14 @@ function connectDataListeners() {
         if (familyLink?.accountType === "owner" && state.family.members.filter(canSelectFamilyMember).length > 1) state.page = "account-picker";
       }
       persist(); if (["family", "account", "account-picker"].includes(state.page)) render();
-      }, (error) => showToast(error.message || "Could not load family members."));
+      }, (error) => showListenerError("Family members", error));
     }
   }
   if (canAdmin()) {
     pendingUsersUnsubscribe = backend.subscribePendingUsers((users) => {
       state.pendingUsers = users.filter((user) => user.schoolId === SCHOOL_ID);
       persist(); if (state.page === "settings-detail" && ["admin", "users"].includes(state.settingsDetail)) render();
-    }, (error) => showToast(error.message || "Could not load pending accounts."));
+    }, (error) => showListenerError("Pending accounts", error));
   }
 }
 
@@ -1249,7 +1255,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=13").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=14").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
