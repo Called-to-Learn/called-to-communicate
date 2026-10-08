@@ -25,10 +25,14 @@ export async function connectFirebase(onAuthChanged, onError) {
       subscribeConversations: (uid, next, error) => {
         const q = firestoreSDK.query(
           firestoreSDK.collection(db, "conversations"),
-          firestoreSDK.where("memberUids", "array-contains", uid),
-          firestoreSDK.orderBy("updatedAt", "desc")
+          firestoreSDK.where("memberUids", "array-contains", uid)
         );
-        return firestoreSDK.onSnapshot(q, (snapshot) => next(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))), error);
+        return firestoreSDK.onSnapshot(q, (snapshot) => {
+          const timestampMillis = (value) => typeof value?.toMillis === "function" ? value.toMillis() : value instanceof Date ? value.getTime() : 0;
+          const conversations = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+          conversations.sort((left, right) => timestampMillis(right.updatedAt) - timestampMillis(left.updatedAt));
+          next(conversations);
+        }, error);
       },
       subscribeMessages: (conversationId, next, error) => {
         const q = firestoreSDK.query(

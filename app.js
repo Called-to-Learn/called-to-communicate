@@ -661,7 +661,10 @@ async function createConversation() {
     memberCount: people.length + 1, preview: "Start a conversation", color: one ? people[0].color : "purple", members: [...new Set([state.currentUser.name, ...names])]
   };
   try {
-    if (backend?.enabled && authUser) conversation.id = await backend.createConversation(conversation);
+    if (backend?.enabled && authUser) {
+      conversation.id = await backend.createConversation(conversation);
+      state.conversations = [{ ...conversation, unread: 0, time: "Now" }, ...state.conversations.filter((item) => item.id !== conversation.id)];
+    }
     else conversation.id = `new-${Date.now()}`;
     if (!backend?.enabled) { state.conversations.unshift({ ...conversation, id: conversation.id, unread: 0, time: "Now" }); state.messages[conversation.id] = []; persist(); }
     state.selectedPersonIds = [];
