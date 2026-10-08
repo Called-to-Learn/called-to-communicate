@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=8";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=9";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -641,7 +641,7 @@ async function createConversation() {
       return;
     }
     try {
-      if (backend?.enabled && authUser) await backend.addConversationMembers(conversationId, people.map((person) => person.id));
+      if (backend?.enabled && authUser) await backend.addConversationMembers(conversationId, people.map((person) => person.id), people.map((person) => person.name));
       else {
         const existingNames = (conversation.members || conversation.memberNames || []).map((name) => name === "You" ? state.currentUser.name : name);
         conversation.members = [...new Set([...existingNames, state.currentUser.name, ...people.map((person) => person.name)])];
@@ -1070,7 +1070,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=11").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=12").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;

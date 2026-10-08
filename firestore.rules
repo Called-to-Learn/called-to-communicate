@@ -65,6 +65,53 @@ service cloud.firestore {
         && request.auth.uid in get(conversationPath).data.memberUids;
     }
 
+    function conversationManager(conversationId) {
+      let conversationPath = /databases/$(database)/documents/conversations/$(conversationId);
+      return activeUser()
+        && exists(conversationPath)
+        && (get(conversationPath).data.createdBy == request.auth.uid || presidencyOrAdmin());
+    }
+
+    function conversationMemberUpdateAllowed(conversationId) {
+      let oldUids = resource.data.memberUids;
+      let newUids = request.resource.data.memberUids;
+      let oldNames = resource.data.memberNames;
+      let newNames = request.resource.data.memberNames;
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let fieldsValid = changed.hasOnly(['memberUids', 'memberNames', 'memberCount', 'kind', 'updatedAt'])
+        && newUids is list
+        && newNames is list
+        && newUids.size() <= 100
+        && newNames.size() <= 100
+        && request.resource.data.memberCount == newUids.size();
+      let canAdd = newUids.size() > oldUids.size()
+        && newUids.hasAll(oldUids)
+        && newNames.size() == oldNames.size() + (newUids.size() - oldUids.size())
+        && newNames.hasAll(oldNames)
+        && (resource.data.kind in ['direct', 'group']
+          || (resource.data.kind == 'class'
+            && (presidencyOrAdmin() || (roleIs('teacher')
+              && resource.data.classId is string
+              && get(/databases/$(database)/documents/classes/$(resource.data.classId)).data.teacherUid == request.auth.uid)))
+          || (resource.data.kind == 'announcement' && presidencyOrAdmin()))
+        && (request.resource.data.kind == resource.data.kind
+          || (resource.data.kind == 'direct' && request.resource.data.kind == 'group' && newUids.size() > 2));
+      let canLeave = newUids.size() == oldUids.size() - 1
+        && oldUids.hasAll(newUids)
+        && request.auth.uid in oldUids
+        && !(request.auth.uid in newUids)
+        && newUids.size() > 0
+        && newNames.size() >= oldNames.size() - 1
+        && newNames.size() <= oldNames.size()
+        && oldNames.hasAll(newNames)
+        && request.resource.data.kind == resource.data.kind;
+      return conversationMember(conversationId)
+        && oldUids is list
+        && oldNames is list
+        && fieldsValid
+        && (canAdd || canLeave);
+    }
+
     match /users/{userId} {
       // A pending user can read their own verification state, but has no school access.
       allow get: if signedIn() && (request.auth.uid == userId || presidencyOrAdmin());
@@ -139,7 +186,9 @@ service cloud.firestore {
     match /conversations/{conversationId} {
       allow read: if activeUser()
         && resource.data.schoolId == 'ctla'
-        && request.auth.uid in resource.data.memberUids;
+        && (request.auth.uid in resource.data.memberUids
+          || resource.data.createdBy == request.auth.uid
+          || presidencyOrAdmin());
 
       allow create: if activeUser()
         && request.resource.data.schoolId == 'ctla'
@@ -156,6 +205,8 @@ service cloud.firestore {
 
       allow update: if conversationMember(conversationId)
         && (
+          conversationMemberUpdateAllowed(conversationId)
+          ||
           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'updatedAt'])
             && request.resource.data.lastMessage.senderName is string
             && request.resource.data.lastMessage.senderName.size() <= 100
@@ -174,7 +225,7 @@ service cloud.firestore {
         || (activeUser() && resource.data.createdBy == request.auth.uid);
 
       match /messages/{messageId} {
-        allow read: if conversationMember(conversationId);
+        allow read: if conversationMember(conversationId) || conversationManager(conversationId);
         allow create: if conversationMember(conversationId)
           && request.resource.data.keys().hasOnly([
             'senderUid', 'senderName', 'senderInitials', 'text', 'createdAt', 'schoolId',
@@ -190,7 +241,8 @@ service cloud.firestore {
             || (request.resource.data.attachmentName is string
               && request.resource.data.attachmentName.size() <= 200
               && request.resource.data.attachmentType is string));
-        allow update, delete: if false;
+        allow delete: if conversationManager(conversationId);
+        allow update: if false;
       }
     }
 
