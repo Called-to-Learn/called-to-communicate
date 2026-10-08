@@ -390,7 +390,7 @@ function renderSettingsDetail() {
 
 function renderNewMessage() {
   const query = (state.search || "").toLowerCase();
-  const recipients = directory.length ? directory.map((person) => ({ ...person, id: person.id, role: titleRole(person.role || "student"), kind: person.kind || "person", color: person.color || "blue" })) : state.people;
+  const recipients = directory.length ? directory.map((person) => ({ ...person, id: person.id, name: person.displayName || person.name || "School member", role: titleRole(person.role || "student"), kind: person.kind || "person", color: person.color || "blue" })) : state.people;
   const typeFilter = state.newMessageFilter;
   const existingConversation = state.addingToConversationId ? state.conversations.find((item) => item.id === state.addingToConversationId) : null;
   const existingUids = new Set(existingConversation?.memberUids || []);
@@ -614,7 +614,13 @@ async function submitMessage(form) {
 }
 
 async function createConversation() {
-  const people = (directory.length ? directory : state.people).filter((person) => state.selectedPersonIds.includes(person.id));
+  const people = (directory.length ? directory : state.people)
+    .filter((person) => state.selectedPersonIds.includes(person.id))
+    .map((person) => ({
+      ...person,
+      name: person.displayName || person.name || "School member",
+      color: person.color || "blue"
+    }));
   if (!people.length) return;
   if (state.addingToConversationId) {
     const conversationId = state.addingToConversationId;
@@ -1046,7 +1052,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=7").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=8").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
