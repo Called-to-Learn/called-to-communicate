@@ -25,6 +25,7 @@ export async function connectFirebase(onAuthChanged, onError) {
       subscribeConversations: (uid, next, error) => {
         const q = firestoreSDK.query(
           firestoreSDK.collection(db, "conversations"),
+          firestoreSDK.where("schoolId", "==", "ctla"),
           firestoreSDK.where("memberUids", "array-contains", uid)
         );
         return firestoreSDK.onSnapshot(q, (snapshot) => {
