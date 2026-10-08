@@ -325,8 +325,14 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
   if (!initial.exists || initial.data().schoolId !== "ctla") throw new HttpsError("not-found", "Conversation not found.");
   const before = initial.data();
   if (!before.memberUids?.includes(uid)) throw new HttpsError("permission-denied", "You must be a member of this conversation.");
-  if ((before.kind === "announcement" && !["presidency", "admin"].includes(user.role)) || (before.kind === "class" && !["teacher", "presidency", "admin"].includes(user.role))) {
+  if (before.kind === "announcement" && !["presidency", "admin"].includes(user.role)) {
     throw new HttpsError("permission-denied", "Only authorized school staff can add people to class or announcement chats.");
+  }
+  if (before.kind === "class" && !["presidency", "admin"].includes(user.role)) {
+    const classSnapshot = before.classId ? await db.doc(`classes/${before.classId}`).get() : null;
+    if (user.role !== "teacher" || !classSnapshot?.exists || classSnapshot.data().teacherUid !== uid) {
+      throw new HttpsError("permission-denied", "Only the class teacher, Presidency, or Admin can add members to this class chat.");
+    }
   }
 
   const directorySnapshots = await db.getAll(...newUids.map((memberUid) => db.doc(`directory/${memberUid}`)));
@@ -343,8 +349,8 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
     const conversation = snapshot.data();
     if (!conversation.memberUids?.includes(uid)) throw new HttpsError("permission-denied", "You are no longer a member of this conversation.");
     const memberUids = [...new Set([...conversation.memberUids, ...newUids])];
-    if (memberUids.length > 5000) throw new HttpsError("resource-exhausted", "This conversation has reached its member limit.");
-    const memberNames = [...new Set([...(conversation.memberNames || []), ...newUids.map((memberUid) => directoryByUid.get(memberUid).displayName)])];
+    if (memberUids.length > 100) throw new HttpsError("resource-exhausted", "This conversation has reached its 100-member limit.");
+    const memberNames = [...new Set([...(conversation.memberNames || []), ...newUids.map((memberUid) => directoryByUid.get(memberUid).displayName || "School member")])];
     transaction.update(conversationRef, {
       memberUids, memberNames, memberCount: memberUids.length,
       kind: conversation.kind === "direct" && memberUids.length > 2 ? "group" : conversation.kind,

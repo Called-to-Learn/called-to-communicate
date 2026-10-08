@@ -408,6 +408,16 @@ function renderNewMessage() {
 }
 
 function activeConversation() { return state.conversations.find((item) => item.id === state.activeConversationId) || { id: state.activeConversationId, title: "Conversation", kind: "direct", members: [] }; }
+function canAddConversationMembers(conversation) {
+  if (!remoteMode) return true;
+  if (!authUser || !conversation.memberUids?.includes(authUser.uid)) return false;
+  if (conversation.kind === "announcement") return canAdmin();
+  if (conversation.kind === "class") {
+    const classRecord = state.classes.find((item) => item.id === conversation.classId);
+    return canAdmin() || (currentRole() === "Teacher" && classRecord?.teacherUid === authUser.uid);
+  }
+  return true;
+}
 function renderChat() {
   const conversation = activeConversation();
   const messages = state.messages[conversation.id] || [];
@@ -479,9 +489,10 @@ function renderEditChat() {
   const conversation = activeConversation();
   const canEdit = !remoteMode || conversation.createdBy === authUser?.uid || canManageSchool();
   const canDelete = !remoteMode || conversation.createdBy === authUser?.uid || canAdmin();
+  const canAddMembers = canAddConversationMembers(conversation);
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="back">${icon("back")} Back</button><div class="page-title-row"><div><h1 class="page-title">Edit Chat</h1></div></div>
     <form id="edit-chat-form" class="card" style="padding:16px"><div class="form-field"><label>Chat name</label><input name="title" value="${esc(conversation.title)}" required maxlength="60" ${canEdit ? "" : "disabled"}></div><div class="form-field"><label>Description (optional)</label><textarea name="description" maxlength="100" ${canEdit ? "" : "disabled"}>${esc(conversation.description || "")}</textarea><span class="item-subtitle">${canEdit ? "100 character maximum" : "Only the conversation creator or school staff can edit chat details."}</span></div>${canEdit ? `<button class="button primary wide" type="submit">Save Changes</button>` : ""}</form>
-    <div class="section-heading"><h2>Members (${conversation.memberCount || conversation.members?.length || 1})</h2></div><div class="card card-list">${(conversation.members || []).map((name) => `<div class="list-item">${avatar({ name, color: "blue" }, "small")}<span class="item-copy"><span class="item-title">${esc(name)}</span></span></div>`).join("")}<button class="list-item" data-action="add-members">${icon("plus")}<span class="item-title">Add Members</span>${icon("chevron")}</button></div>
+    <div class="section-heading"><h2>Members (${conversation.memberCount || conversation.members?.length || 1})</h2></div><div class="card card-list">${(conversation.members || []).map((name) => `<div class="list-item">${avatar({ name, color: "blue" }, "small")}<span class="item-copy"><span class="item-title">${esc(name)}</span></span></div>`).join("")}${canAddMembers ? `<button class="list-item" data-action="add-members">${icon("plus")}<span class="item-title">Add Members</span>${icon("chevron")}</button>` : ""}</div>
     <div class="section-heading"><h2>Chat Settings</h2></div><div class="card"><label class="toggle-row"><span class="item-icon">${icon("bell")}</span><span class="toggle-copy"><b>Notifications</b><span>All messages</span></span><input class="switch" type="checkbox" data-pref="chatNotifications" ${state.notifications ? "checked" : ""}></label><label class="toggle-row"><span class="item-icon">${icon("message")}</span><span class="toggle-copy"><b>Pin Chat</b><span>Keep this chat at the top</span></span><input class="switch" type="checkbox" data-pref="pinChat" ${state.pinnedConversationIds?.includes(conversation.id) ? "checked" : ""}></label><button class="list-item" data-action="leave-chat">${icon("back")}<span class="item-title">Leave Chat</span>${icon("chevron")}</button></div>
     ${canDelete ? `<button class="button danger mt-12" data-action="delete-chat">${icon("back")}Delete Chat</button>` : ""}</section>`;
 }
@@ -625,6 +636,10 @@ async function createConversation() {
   if (state.addingToConversationId) {
     const conversationId = state.addingToConversationId;
     const conversation = state.conversations.find((item) => item.id === conversationId) || activeConversation();
+    if (!canAddConversationMembers(conversation)) {
+      showToast("You do not have permission to add members to this conversation.");
+      return;
+    }
     try {
       if (backend?.enabled && authUser) await backend.addConversationMembers(conversationId, people.map((person) => person.id));
       else {
@@ -823,7 +838,7 @@ async function handleClick(event) {
       if (backend?.enabled && authUser) { await backend.signOut(); stopListeners(); }
       state.isDemoSignedIn = false; state.currentUser = { name: "Emma Smith", email: "emma.smith@example.com", role: "Student", color: "blue", initials: "ES" }; state.page = "home"; persist(); render(); break;
     case "delete-chat":
-      if (confirm(`Remove “${activeConversation().title}” from this device?`)) {
+      if (confirm(`Delete “${activeConversation().title}” for all members? This cannot be undone.`)) {
         if (backend?.enabled && authUser) {
           try { await backend.deleteConversation(state.activeConversationId); }
           catch (error) { showToast(error.message || "Conversation could not be deleted."); break; }
@@ -1055,7 +1070,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=10").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=11").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
