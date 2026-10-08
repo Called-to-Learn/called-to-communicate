@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=9";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=11";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -106,12 +106,16 @@ let state = loadState();
 let backend = null;
 let authUser = null;
 let userProfile = null;
+let familyLink = null;
+let activeFamilyId = null;
+let promptAccountPickerAfterFamilyLoad = false;
 let directory = [];
 let remoteMode = false;
 let messageUnsubscribe = null;
 let conversationUnsubscribe = null;
 let classesUnsubscribe = null;
 let eventsUnsubscribe = null;
+let identityProfileUnsubscribe = null;
 let directoryUnsubscribe = null;
 let familyUnsubscribe = null;
 let familyMembersUnsubscribe = null;
@@ -130,10 +134,20 @@ const persist = () => {
 const icon = (name, extra = "") => `<svg class="icon ${extra}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 const esc = (text = "") => String(text).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const titleRole = (role = "student") => ({ parent: "Parent", student: "Student", teacher: "Teacher", presidency: "Presidency", admin: "Admin" }[String(role).toLowerCase()] || "Student");
-const currentRole = () => remoteMode ? titleRole(userProfile?.role) : state.currentUser.role;
-const canManageSchool = () => ["Teacher", "Presidency", "Admin"].includes(currentRole());
-const canAdmin = () => ["Presidency", "Admin"].includes(currentRole());
-const isAdmin = () => currentRole() === "Admin";
+const activeFamilyMember = () => state.family.members.find((member) => member.id === state.activeMemberId) || null;
+const canSelectFamilyMember = (member) => !remoteMode || (member?.accountType === "linked"
+  ? member.linkedUid === authUser?.uid
+  : member?.accountType === "owner"
+    ? member.id === authUser?.uid
+    : member?.accountType === "managed" && (member.ownerUid === authUser?.uid || member.uid === authUser?.uid));
+const activeIdentityId = () => state.activeMemberId || authUser?.uid || "demo";
+const currentRole = () => remoteMode
+  ? (activeIdentityId() === authUser?.uid ? titleRole(userProfile?.role) : titleRole(activeFamilyMember()?.role || "student"))
+  : state.currentUser.role;
+const verifiedRole = () => remoteMode && activeIdentityId() !== authUser?.uid ? "Student" : currentRole();
+const canManageSchool = () => ["Teacher", "Presidency", "Admin"].includes(verifiedRole());
+const canAdmin = () => ["Presidency", "Admin"].includes(verifiedRole());
+const isAdmin = () => verifiedRole() === "Admin";
 const isSignedIn = () => remoteMode ? Boolean(authUser && userProfile?.status === "active") : state.isDemoSignedIn;
 
 function brand(extra = "") {
@@ -217,15 +231,17 @@ function render() {
   else if (state.page === "new-message") page = renderNewMessage();
   else if (state.page === "family") page = renderFamily();
   else if (state.page === "account") page = renderAccount();
+  else if (state.page === "account-picker") page = renderAccountPicker();
   else if (state.page === "settings-detail") page = renderSettingsDetail();
   else if (state.page === "class-detail") page = renderClassDetail();
   else if (state.page === "event-detail") page = renderEventDetail();
   else if (state.page === "create-event") page = renderCreateEvent();
+  else if (state.page === "create-personal-event") page = renderCreatePersonalEvent();
   else if (state.page === "create-class") page = renderCreateClass();
   else if (state.page === "create-announcement") page = renderCreateAnnouncement();
   else if (state.page === "edit-chat") page = renderEditChat();
   else page = renderHome();
-  const hideTabs = ["chat"].includes(state.page);
+  const hideTabs = ["chat", "account-picker"].includes(state.page);
   app.innerHTML = `<div class="app-layout">${rail()}<main class="main-column">${page}</main></div>${hideTabs ? "" : tabBar()}`;
   if (state.page === "chat") requestAnimationFrame(() => { const messages = $("#chat-messages"); if (messages) messages.scrollTop = messages.scrollHeight; });
 }
@@ -311,6 +327,7 @@ function renderCalendar() {
   const events = state.events.filter((event) => event.date === state.selectedDate && (state.calendarFilter === "All" || event.kind === kinds[state.calendarFilter])).sort((a, b) => a.time.localeCompare(b.time));
   const canCreate = canManageSchool();
   return `<section class="page">${header({ action: canCreate ? "create-event" : "account" })}<label class="search-field">${icon("search")}<input id="calendar-search" type="search" placeholder="Search events" aria-label="Search events"></label>
+    <button class="button ghost wide" data-action="create-personal-event">${icon("plus")}Add to ${esc(state.currentUser.name)}’s calendar</button>
     <div class="filter-row">${filterKinds.map((kind) => `<button class="filter-chip ${state.calendarFilter === kind ? "active" : ""}" data-action="calendar-filter" data-filter="${kind}">${icon(kind === "Live Classes" ? "video" : kind === "Meetings" ? "users" : kind === "Events" ? "calendar" : kind === "Deadlines" ? "book" : "check")} ${kind}</button>`).join("")}</div>
     <div class="calendar-toolbar"><h2>${base.toLocaleDateString([], { month: "long", year: "numeric" })}</h2><div class="calendar-controls"><button class="round-button" data-action="month-prev" aria-label="Previous month">${icon("back")}</button><button class="round-button" data-action="month-next" aria-label="Next month">${icon("chevron")}</button><button class="button ghost" data-action="month-today">Today</button></div></div>
     <div class="calendar-grid"><div class="weekday">Sun</div><div class="weekday">Mon</div><div class="weekday">Tue</div><div class="weekday">Wed</div><div class="weekday">Thu</div><div class="weekday">Fri</div><div class="weekday">Sat</div>${cells.join("")}</div>
@@ -332,27 +349,49 @@ function renderSettings() {
 }
 
 function renderFamily() {
-  if (remoteMode && !userProfile?.familyId) return renderFamilySetup();
+  if (remoteMode && !activeFamilyId) return renderFamilySetup();
   const family = state.family;
-  const familyRoles = remoteMode ? ["Parent", "Student"] : roles;
-  const memberForm = state.addingMember ? `<form id="family-member-form" class="card" style="padding:15px;margin:12px 0"><div class="form-field"><label for="member-name">Full name</label><input id="member-name" name="name" required placeholder="Family member name"></div>${remoteMode ? `<div class="form-field"><label for="member-email">Email for sign-in</label><input id="member-email" name="email" type="email" autocomplete="off" required placeholder="member@example.com"><span class="item-subtitle">We’ll create an individual account and give you a secure setup link to share.</span></div>` : ""}<div class="form-field"><label for="member-role">Role</label><select id="member-role" name="role">${familyRoles.map((role) => `<option>${role}</option>`).join("")}</select></div><div class="form-field"><label for="member-grade">Grade (optional)</label><input id="member-grade" name="grade" placeholder="e.g. Grade 6"></div><div class="form-field"><label for="member-tribe">Tribe</label><select id="member-tribe" name="tribe"><option>Lamanites</option><option>Nephites</option><option>Jaredites</option><option>Mulekites</option></select></div><div style="display:flex;gap:8px"><button class="button primary" type="submit">${remoteMode ? "Create Account" : "Add Member"}</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : "";
-  return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Manage your family members and their accounts.</p></div></div>
-    <div class="family-summary card"><span class="item-icon" style="width:64px;height:64px;border-radius:50%">${icon("home")}</span><div class="family-copy"><h2>${esc(family.name)}</h2><p>${family.members.length} members</p></div><button class="button ghost" data-action="edit-family">${icon("compose")}Edit Family</button></div>
-    <div class="section-heading"><h2>Family Members</h2>${currentRole() === "Parent" ? `<button class="button" data-action="add-member">${icon("plus")}Add Family Member</button>` : ""}</div>${memberForm}
-    <div class="card card-list">${family.members.map((member) => `<button class="list-item" data-action="edit-member" data-id="${esc(member.id)}"><span class="avatar small ${esc(member.color || "purple")}">${esc(member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join(""))}</span><span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="item-subtitle">${esc(roleDetail(member.role, member))}</span>${member.tribe ? `<span class="item-subtitle">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span>${icon("chevron", "row-chevron")}</button>`).join("")}</div>
-    <div class="notice-card mt-12"><strong>About Family Accounts</strong>A family account lets you manage multiple family members under one account. Each member has their own role, classes, and settings.</div></section>`;
+  const familyRoles = remoteMode ? ["Parent", "Student", "Teacher", "Presidency"] : roles;
+  const canManageFamily = !remoteMode || (familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid);
+  const memberForm = state.addingMember && canManageFamily ? `<form id="family-member-form" class="card" style="padding:15px;margin:12px 0">
+    <div class="form-field"><label for="member-account-type">Account type</label><select id="member-account-type" name="accountType"><option value="managed">Managed subaccount · shares this login</option><option value="linked">Link a personal account</option></select></div>
+    <div class="form-field"><label for="member-name">Full name</label><input id="member-name" name="name" required placeholder="Family member name"></div>
+    <div class="form-field"><label for="member-email">Personal account email (linked only)</label><input id="member-email" name="email" type="email" autocomplete="off" placeholder="member@example.com"><span class="item-subtitle">The person signs in to their existing school account and enters the invitation code. No duplicate profile is created.</span></div>
+    <div class="form-field"><label for="member-role">Role</label><select id="member-role" name="role">${familyRoles.map((role) => `<option>${role}</option>`).join("")}</select><span class="item-subtitle">Linked accounts keep their verified school role. Staff tools require a separate school-approved login.</span></div>
+    <div class="form-field"><label for="member-grade">Grade (optional)</label><input id="member-grade" name="grade" placeholder="e.g. Grade 6"></div>
+    <div class="form-field"><label for="member-tribe">Tribe</label><select id="member-tribe" name="tribe"><option>Lamanites</option><option>Nephites</option><option>Jaredites</option><option>Mulekites</option></select></div>
+    <div style="display:flex;gap:8px"><button class="button primary" type="submit">Add or Invite</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : "";
+  const memberRows = family.members.map((member) => `<div class="list-item">
+      <button class="member-select family-member-row ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}" ${canSelectFamilyMember(member) ? "" : "disabled"}>
+      <span class="avatar small ${esc(member.color || "purple")}">${esc(member.initials || member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join(""))}</span>
+      <span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="item-subtitle">${esc(roleDetail(member.role, member))} · ${member.accountType === "managed" ? "Shared family login" : member.accountType === "owner" ? "Account holder" : "Linked personal login"}</span>${member.tribe ? `<span class="item-subtitle">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span>
+    </button>
+    ${canManageFamily && member.accountType !== "owner" ? `<span class="family-member-actions">${member.accountType === "managed" ? `<button class="icon-button" aria-label="Edit ${esc(member.name)}" data-action="edit-member" data-id="${esc(member.id)}">${icon("compose")}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button>` : ""}<button class="icon-button danger-text" aria-label="Unlink ${esc(member.name)}" data-action="remove-family-member" data-id="${esc(member.id)}">${icon("back")}</button></span>` : icon(state.activeMemberId === member.id ? "check" : "chevron", "row-chevron")}
+  </div>`).join("");
+  return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Manage family profiles and linked personal accounts.</p></div></div>
+    <div class="family-summary card"><span class="item-icon" style="width:64px;height:64px;border-radius:50%">${icon("home")}</span><div class="family-copy"><h2>${esc(family.name)}</h2><p>${family.members.length} members · ${familyLink?.accountType === "linked" ? "linked personal account" : "family login"}</p></div>${canManageFamily ? `<button class="button ghost" data-action="edit-family">${icon("compose")}Edit Family</button>` : ""}</div>
+    <div class="section-heading"><h2>Family Members</h2>${canManageFamily ? `<button class="button" data-action="add-member">${icon("plus")}Add Family Member</button>` : ""}</div>${memberForm}
+    <div class="card card-list">${memberRows || `<div class="empty-state">No family members have been added yet.</div>`}</div>
+    ${canManageFamily ? `<div class="notice-card mt-12"><strong>About family accounts</strong>Managed profiles share the family login and keep their own roles, classes, messages, calendars, and settings. Linked members keep their own Firebase login and school profile.</div>` : `<div class="notice-card mt-12"><strong>Linked personal account</strong>Your login and school profile remain independent. Family membership does not grant access to your private chats or settings.</div>`}</section>`;
 }
 
 function renderFamilySetup() {
-  if (currentRole() !== "Parent") return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="notice-card"><strong>No family account is linked</strong>Ask a parent or account holder to create or connect your family account.</div></section>`;
-  return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Create Family</h1><p class="page-subtitle">Set up your family account</p></div></div><div class="notice-card"><strong>Together at School</strong>Keep your family connected. Add family members, manage their individual accounts, and stay informed in one place.</div><form id="family-create-form" class="card" style="padding:16px"><div class="form-field"><label>Family name</label><input name="name" required value="The ${(state.currentUser.name.split(/\s+/).slice(-1)[0] || "Family")} Family"></div><div class="form-field"><label>Your tribe</label><select name="tribe"><option>Lamanites</option><option>Nephites</option><option>Jaredites</option><option>Mulekites</option></select></div><button class="button primary wide" type="submit">Create Family Account</button></form></section>`;
+  const canCreate = ["Parent", "Admin"].includes(verifiedRole());
+  return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Create a family login or link your existing account to an invitation.</p></div></div>
+    ${canCreate ? `<div class="notice-card"><strong>Together at School</strong>Managed subaccounts share this login while keeping individual school roles, classes, chats, calendars, and settings.</div><form id="family-create-form" class="card" style="padding:16px"><div class="form-field"><label>Family name</label><input name="name" required value="The ${(state.currentUser.name.split(/\s+/).slice(-1)[0] || "Family")} Family"></div><div class="form-field"><label>Your tribe</label><select name="tribe"><option>Lamanites</option><option>Nephites</option><option>Jaredites</option><option>Mulekites</option></select></div><button class="button primary wide" type="submit">Create Family Account</button></form>` : ""}
+    <div class="section-heading"><h2>Link a personal account</h2></div><p class="page-subtitle">Sign in to your existing school account, then enter the code from your family account holder.</p><form id="family-link-form" class="card" style="padding:16px"><div class="form-field"><label>Family invitation code</label><input name="code" required autocomplete="one-time-code" placeholder="Paste your invitation code"></div><button class="button primary wide" type="submit">Link My Existing Account</button></form></section>`;
+}
+
+function renderAccountPicker() {
+  const selectable = state.family.members.filter(canSelectFamilyMember);
+  return `<section class="page account-picker-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Who is using Called to Communicate?</h1><p class="page-subtitle">Choose a family profile. Each profile has its own role, classes, messages, calendar, and settings.</p></div></div><div class="card card-list">${selectable.map((member) => `<button class="member-select ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}">${avatar(member, "small")}<span class="member-copy"><b>${esc(member.name)}</b><span>${esc(roleDetail(member.role, member))}</span></span>${icon("chevron")}</button>`).join("")}</div>${selectable.length === 1 ? `<button class="button primary wide" data-action="continue-account">Continue as ${esc(selectable[0].name)}</button>` : ""}<button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
 }
 
 function renderAccount() {
-  const members = state.family.members;
-  return `<section class="page">${header({ action: "account" })}<div class="page-title-row"><div><h1 class="page-title">Account</h1><p class="page-subtitle">Switch family member or role</p></div></div>
+  const members = state.family.members.filter((member) => member.accountType !== "linked" || member.linkedUid === authUser?.uid);
+  return `<section class="page">${header({ action: "account" })}<div class="page-title-row"><div><h1 class="page-title">Account</h1><p class="page-subtitle">Switch family profile or role</p></div></div>
     <div class="card card-list">${members.map((member) => `<button class="member-select ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}">${avatar(member, "small")}<span class="member-copy"><b>${esc(member.name)}</b><span>${esc(roleDetail(member.role, member))}</span></span>${state.activeMemberId === member.id ? icon("check") : icon("chevron")}</button>`).join("")}</div>
-    ${!remoteMode ? `<p class="section-label">Preview another role</p><div class="role-cards">${roles.map((role) => `<button class="role-choice ${currentRole() === role ? "selected" : ""}" data-action="switch-role" data-role="${role}">${icon(roleIcons[role])}<span>${role}</span></button>`).join("")}</div>` : `<div class="notice-card"><strong>Role verification</strong>Your account role is managed by Called to Learn Academy. Switching family members changes the displayed profile, not school permissions.</div>`}
+    ${!remoteMode ? `<p class="section-label">Preview another role</p><div class="role-cards">${roles.map((role) => `<button class="role-choice ${currentRole() === role ? "selected" : ""}" data-action="switch-role" data-role="${role}">${icon(roleIcons[role])}<span>${role}</span></button>`).join("")}</div>` : `<div class="notice-card"><strong>Family profile switching</strong>Managed profiles share the family login. Linked personal accounts keep their own credentials and private school data.</div>`}
     <button class="button ghost wide" data-action="tab" data-tab="settings">Back to Settings</button></section>`;
 }
 
@@ -410,11 +449,12 @@ function renderNewMessage() {
 function activeConversation() { return state.conversations.find((item) => item.id === state.activeConversationId) || { id: state.activeConversationId, title: "Conversation", kind: "direct", members: [] }; }
 function canAddConversationMembers(conversation) {
   if (!remoteMode) return true;
-  if (!authUser || !conversation.memberUids?.includes(authUser.uid)) return false;
+  const memberProfiles = Array.isArray(conversation.memberProfileIds) ? conversation.memberProfileIds : conversation.memberUids || [];
+  if (!authUser || !memberProfiles.includes(activeIdentityId())) return false;
   if (conversation.kind === "announcement") return canAdmin();
   if (conversation.kind === "class") {
     const classRecord = state.classes.find((item) => item.id === conversation.classId);
-    return canAdmin() || (currentRole() === "Teacher" && classRecord?.teacherUid === authUser.uid);
+    return canAdmin() || (verifiedRole() === "Teacher" && classRecord?.teacherUid === authUser.uid);
   }
   return true;
 }
@@ -442,8 +482,8 @@ function renderClassDetail() {
   const item = state.classes.find((entry) => entry.id === state.activeClassId) || state.classes[0];
   const joined = Boolean(item.joined);
   const requested = state.joinedRequests.includes(item.id);
-  const canReview = remoteMode ? canAdmin() || (currentRole() === "Teacher" && item.teacherUid === authUser?.uid) : canManageSchool();
-  const requests = canReview ? `<div class="section-heading"><h2>Join Requests (${state.classJoinRequests.length})</h2></div><div class="card card-list">${state.classJoinRequests.length ? state.classJoinRequests.map((joinRequest) => `<div class="list-item">${avatar({ name: joinRequest.displayName, color: "blue" }, "small")}<span class="item-copy"><span class="item-title">${esc(joinRequest.displayName || "School member")}</span><span class="item-subtitle">Enrollment request</span></span><button class="button" data-action="respond-join" data-user-id="${esc(joinRequest.uid)}" data-approve="true">Approve</button><button class="button ghost" data-action="respond-join" data-user-id="${esc(joinRequest.uid)}" data-approve="false">Decline</button></div>`).join("") : `<div class="empty-state">No pending requests.</div>`}</div>` : "";
+  const canReview = remoteMode ? canAdmin() || (verifiedRole() === "Teacher" && item.teacherUid === authUser?.uid) : canManageSchool();
+  const requests = canReview ? `<div class="section-heading"><h2>Join Requests (${state.classJoinRequests.length})</h2></div><div class="card card-list">${state.classJoinRequests.length ? state.classJoinRequests.map((joinRequest) => `<div class="list-item">${avatar({ name: joinRequest.displayName, color: "blue" }, "small")}<span class="item-copy"><span class="item-title">${esc(joinRequest.displayName || "School member")}</span><span class="item-subtitle">Enrollment request</span></span><button class="button" data-action="respond-join" data-user-id="${esc(joinRequest.id)}" data-approve="true">Approve</button><button class="button ghost" data-action="respond-join" data-user-id="${esc(joinRequest.id)}" data-approve="false">Decline</button></div>`).join("") : `<div class="empty-state">No pending requests.</div>`}</div>` : "";
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="classes">${icon("back")} Classes</button><div class="card" style="padding:18px;margin-top:12px">${avatar(item, "square")}<h1 class="page-title" style="margin-top:15px">${esc(item.name)}</h1><p class="page-subtitle">${esc(item.teacher)} · ${item.memberCount || item.members || 1} members</p><p class="page-subtitle">${esc(item.note || item.description || "Class updates and resources")}</p><button class="button ${joined ? "ghost" : "primary"} wide mt-12" data-action="join-class-action" data-id="${esc(item.id)}" ${requested ? "disabled" : ""}>${joined ? "Open Class Chat" : requested ? "Request Sent" : item.openEnrollment ? "Join Class" : "Request to Join"}</button></div>${requests}<div class="section-heading"><h2>Class resources</h2></div><div class="card card-list"><div class="list-item">${icon("book")}<span class="item-copy"><span class="item-title">Course materials</span><span class="item-subtitle">Assignments and class documents</span></span>${icon("chevron")}</div><div class="list-item">${icon("calendar")}<span class="item-copy"><span class="item-title">Upcoming class</span><span class="item-subtitle">See the calendar for live lessons</span></span>${icon("chevron")}</div></div></section>`;
 }
 
@@ -453,7 +493,7 @@ function openClassDetail(id) {
   joinRequestsUnsubscribe?.();
   joinRequestsUnsubscribe = null;
   const item = state.classes.find((entry) => entry.id === id);
-  const canReview = remoteMode ? canAdmin() || (currentRole() === "Teacher" && item?.teacherUid === authUser?.uid) : canManageSchool();
+  const canReview = remoteMode ? canAdmin() || (verifiedRole() === "Teacher" && item?.teacherUid === authUser?.uid) : canManageSchool();
   if (backend?.enabled && authUser && canReview) {
     joinRequestsUnsubscribe = backend.subscribeJoinRequests(id, (requests) => {
       state.classJoinRequests = requests;
@@ -475,6 +515,10 @@ function renderCreateEvent() {
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="calendar">${icon("back")} Calendar</button><div class="page-title-row"><div><h1 class="page-title">New School Event</h1><p class="page-subtitle">Add a class, meeting, deadline, or event.</p></div></div><form id="event-form" class="card" style="padding:16px"><div class="form-field"><label>Event title</label><input name="title" required placeholder="Event title"></div><div class="form-field"><label>Date</label><input name="date" type="date" value="${esc(state.selectedDate)}" required></div><div class="form-field"><label>Time</label><input name="time" type="time" value="09:00" required></div><div class="form-field"><label>Type</label><select name="kind"><option value="live">Live Class</option><option value="meeting">Meeting</option><option value="event">Event</option><option value="deadline">Deadline</option></select></div><div class="form-field"><label>Details or Zoom link</label><input name="detail" placeholder="Room, class, or meeting info"><input name="link" type="url" placeholder="https://zoom.us/…"></div><button class="button primary wide" type="submit">Save Event</button></form></section>`;
 }
 
+function renderCreatePersonalEvent() {
+  return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="calendar">${icon("back")} Calendar</button><div class="page-title-row"><div><h1 class="page-title">Personal Calendar Item</h1><p class="page-subtitle">Only ${esc(state.currentUser.name)}’s profile and its family manager can view this item.</p></div></div><form id="personal-event-form" class="card" style="padding:16px"><div class="form-field"><label>Title</label><input name="title" required maxlength="120" placeholder="Homework, appointment, reminder"></div><div class="form-field"><label>Date</label><input name="date" type="date" value="${esc(state.selectedDate)}" required></div><div class="form-field"><label>Time</label><input name="time" type="time" value="09:00" required></div><div class="form-field"><label>Type</label><select name="kind"><option value="event">Event</option><option value="deadline">Deadline</option><option value="meeting">Meeting</option></select></div><div class="form-field"><label>Details</label><input name="detail" maxlength="400" placeholder="Optional notes"></div><button class="button primary wide" type="submit">Save to This Profile</button></form></section>`;
+}
+
 function renderCreateClass() {
   if (!canManageSchool()) return `<section class="page">${header({ action: "account" })}<div class="notice-card"><strong>Teacher access required</strong>Verified teachers, Presidency, and Admin can create classes.</div></section>`;
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="classes">${icon("back")} Classes</button><div class="page-title-row"><div><h1 class="page-title">Create Class</h1><p class="page-subtitle">Set up a course and its enrollment.</p></div></div><form id="class-form" class="card" style="padding:16px"><div class="form-field"><label>Class name</label><input name="name" required placeholder="e.g. Math 6A"></div><div class="form-field"><label>Teacher</label><input name="teacher" required value="${esc(state.currentUser.name)}"></div><div class="form-field"><label>Description</label><textarea name="description" maxlength="400" placeholder="Share what students will learn"></textarea></div><div class="form-field"><label>Enrollment</label><select name="openEnrollment"><option value="false">Approval required</option><option value="true">Open enrollment</option></select></div><button class="button primary wide" type="submit">Create Class</button></form></section>`;
@@ -487,8 +531,11 @@ function renderCreateAnnouncement() {
 
 function renderEditChat() {
   const conversation = activeConversation();
-  const canEdit = !remoteMode || conversation.createdBy === authUser?.uid || canManageSchool();
-  const canDelete = !remoteMode || conversation.createdBy === authUser?.uid || canAdmin();
+  const authoredByIdentity = conversation.createdByIdentityId
+    ? conversation.createdByIdentityId === activeIdentityId()
+    : conversation.createdBy === authUser?.uid && activeIdentityId() === authUser?.uid;
+  const canEdit = !remoteMode || authoredByIdentity || canManageSchool();
+  const canDelete = !remoteMode || authoredByIdentity || canAdmin();
   const canAddMembers = canAddConversationMembers(conversation);
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="back">${icon("back")} Back</button><div class="page-title-row"><div><h1 class="page-title">Edit Chat</h1></div></div>
     <form id="edit-chat-form" class="card" style="padding:16px"><div class="form-field"><label>Chat name</label><input name="title" value="${esc(conversation.title)}" required maxlength="60" ${canEdit ? "" : "disabled"}></div><div class="form-field"><label>Description (optional)</label><textarea name="description" maxlength="100" ${canEdit ? "" : "disabled"}>${esc(conversation.description || "")}</textarea><span class="item-subtitle">${canEdit ? "100 character maximum" : "Only the conversation creator or school staff can edit chat details."}</span></div>${canEdit ? `<button class="button primary wide" type="submit">Save Changes</button>` : ""}</form>
@@ -509,7 +556,7 @@ function openChat(id) {
   if (backend?.enabled && authUser) {
     messageUnsubscribe = backend.subscribeMessages(id, (messages) => {
       state.messages[id] = messages.map((message) => ({
-        ...message, sender: message.senderName, mine: message.senderUid === authUser.uid,
+        ...message, sender: message.senderName, mine: (message.senderProfileId || message.senderUid) === activeIdentityId(),
         time: timeLabel(timestampToDate(message.createdAt)), senderInitials: (message.senderName || "CT").split(/\s+/).map((part) => part[0]).slice(0, 2).join("")
       }));
       persist();
@@ -520,13 +567,25 @@ function openChat(id) {
 }
 
 function stopListeners() {
-  [messageUnsubscribe, conversationUnsubscribe, classesUnsubscribe, eventsUnsubscribe, directoryUnsubscribe, familyUnsubscribe, familyMembersUnsubscribe, pendingUsersUnsubscribe, joinRequestsUnsubscribe].forEach((unsubscribe) => unsubscribe?.());
-  messageUnsubscribe = conversationUnsubscribe = classesUnsubscribe = eventsUnsubscribe = directoryUnsubscribe = familyUnsubscribe = familyMembersUnsubscribe = pendingUsersUnsubscribe = joinRequestsUnsubscribe = null;
+  [messageUnsubscribe, conversationUnsubscribe, classesUnsubscribe, eventsUnsubscribe, identityProfileUnsubscribe, directoryUnsubscribe, familyUnsubscribe, familyMembersUnsubscribe, pendingUsersUnsubscribe, joinRequestsUnsubscribe].forEach((unsubscribe) => unsubscribe?.());
+  messageUnsubscribe = conversationUnsubscribe = classesUnsubscribe = eventsUnsubscribe = identityProfileUnsubscribe = directoryUnsubscribe = familyUnsubscribe = familyMembersUnsubscribe = pendingUsersUnsubscribe = joinRequestsUnsubscribe = null;
 }
 function connectDataListeners() {
   if (!backend?.enabled || !authUser) return;
   stopListeners();
-  conversationUnsubscribe = backend.subscribeConversations(authUser.uid, (items) => {
+  state.conversations = [];
+  state.messages = {};
+  state.activeConversationId = null;
+  state.classes = [];
+  state.events = [];
+  identityProfileUnsubscribe = backend.subscribeIdentityProfile(activeIdentityId(), (profile) => {
+    if (!profile) return;
+    const memberPrefs = profile.settings?.notificationPrefs || {};
+    const accountPrefs = activeIdentityId() === authUser.uid ? userProfile?.notificationPrefs || {} : {};
+    state.notificationPrefs = { messages: true, announcements: true, events: true, ...accountPrefs, ...memberPrefs };
+    if (state.page === "settings-detail" && state.settingsDetail === "notifications") render();
+  }, (error) => showToast(error.message || "Could not load profile settings."));
+  conversationUnsubscribe = backend.subscribeConversations(authUser.uid, activeIdentityId(), (items) => {
     state.conversations = items.map((item) => ({
       ...item,
       title: item.title || item.memberNames?.filter((name) => name !== state.currentUser.name).join(", ") || "Conversation",
@@ -537,10 +596,10 @@ function connectDataListeners() {
     persist(); if (state.page !== "chat") render();
   }, (error) => showToast(error.message || "Could not load conversations."));
   classesUnsubscribe = backend.subscribeClasses(SCHOOL_ID, (items) => {
-    state.classes = items.map((item) => ({ ...item, joined: item.memberUids?.includes(authUser.uid) || false, color: item.color || "purple", note: item.description || "Class updates and resources" }));
+    state.classes = items.map((item) => ({ ...item, joined: Array.isArray(item.memberProfileIds) ? item.memberProfileIds.includes(activeIdentityId()) : item.memberUids?.includes(authUser.uid) || false, color: item.color || "purple", note: item.description || "Class updates and resources" }));
     persist(); if (state.activeTab === "classes" || state.page === "class-detail") render();
   }, (error) => showToast(error.message || "Could not load classes."));
-  eventsUnsubscribe = backend.subscribeEvents(SCHOOL_ID, (items) => {
+  eventsUnsubscribe = backend.subscribeEvents(SCHOOL_ID, activeIdentityId(), (items) => {
     state.events = items.map((item) => ({ ...item, date: item.date, time: item.time, color: item.color || "purple" }));
     persist(); if (state.activeTab === "calendar") render();
   }, (error) => showToast(error.message || "Could not load events."));
@@ -548,20 +607,39 @@ function connectDataListeners() {
     directory = items;
     if (state.page === "new-message" || (state.page === "settings-detail" && state.settingsDetail === "admin")) render();
   }, (error) => showToast(error.message || "Could not load school directory."));
-  if (userProfile?.familyId) {
-    familyUnsubscribe = backend.subscribeFamily(userProfile.familyId, (family) => {
+  if (activeFamilyId) {
+    familyUnsubscribe = backend.subscribeFamily(activeFamilyId, (family) => {
       if (family) {
         state.family = { ...state.family, name: family.name || "Family Account", tribe: family.tribe || "Lamanites" };
         persist(); if (state.page === "family" || state.page === "account") render();
       }
     }, (error) => showToast(error.message || "Could not load family account."));
-    familyMembersUnsubscribe = backend.subscribeFamilyMembers(userProfile.familyId, (members) => {
-      if (members.length) state.family.members = members.map((member) => ({
-        ...member, id: member.uid || member.id, role: titleRole(member.role), note: member.grade || "",
-        color: member.color || "blue", initials: (member.name || "CT").split(/\s+/).map((word) => word[0]).slice(0, 2).join("")
-      }));
-      persist(); if (state.page === "family" || state.page === "account") render();
-    }, (error) => showToast(error.message || "Could not load family members."));
+    const canListFamilyMembers = familyLink?.accountType === "owner" && activeIdentityId() === authUser.uid;
+    if (familyLink?.accountType === "linked" || canListFamilyMembers) {
+      familyMembersUnsubscribe = backend.subscribeFamilyMembers(activeFamilyId, authUser.uid, canListFamilyMembers, (members) => {
+      if (canListFamilyMembers) {
+        members.filter((member) => member.settings && Object.keys(member.settings).length)
+          .forEach((member) => backend.clearLegacyMemberSettings(activeFamilyId, member.memberId || member.id).catch(() => {}));
+      }
+      state.family.members = members.filter((member) => member.status !== "archived").map((member) => {
+        const { settings, ...publicMember } = member;
+        return {
+        ...publicMember, id: member.memberId || member.uid || member.id, role: titleRole(member.role), note: member.grade || "",
+        color: member.color || "blue", accountType: member.accountType || (member.uid === authUser.uid ? "owner" : "linked"),
+        linkedUid: member.linkedUid || ((member.accountType || (member.uid === authUser.uid ? "owner" : "linked")) === "linked" ? member.uid : null),
+        initials: (member.name || "CT").split(/\s+/).map((word) => word[0]).slice(0, 2).join("")
+      };});
+      if (!state.family.members.some((member) => member.id === state.activeMemberId)) {
+        state.activeMemberId = familyLink?.accountType === "linked" ? authUser.uid : (userProfile?.activeMemberId || authUser.uid);
+      }
+      applyActiveMember();
+      if (promptAccountPickerAfterFamilyLoad) {
+        promptAccountPickerAfterFamilyLoad = false;
+        if (familyLink?.accountType === "owner" && state.family.members.filter(canSelectFamilyMember).length > 1) state.page = "account-picker";
+      }
+      persist(); if (["family", "account", "account-picker"].includes(state.page)) render();
+      }, (error) => showToast(error.message || "Could not load family members."));
+    }
   }
   if (canAdmin()) {
     pendingUsersUnsubscribe = backend.subscribePendingUsers((users) => {
@@ -573,20 +651,35 @@ function connectDataListeners() {
 
 async function handleAuthUser(user) {
   authUser = user;
-  if (!user) { userProfile = null; remoteMode = Boolean(backend?.enabled); render(); return; }
+  if (!user) {
+    userProfile = null; familyLink = null; activeFamilyId = null; remoteMode = Boolean(backend?.enabled);
+    promptAccountPickerAfterFamilyLoad = false;
+    state.family.members = []; state.conversations = []; state.messages = {}; state.activeConversationId = null;
+    state.classes = []; state.events = []; render(); return;
+  }
   remoteMode = true;
   try {
     userProfile = await backend.getUserProfile(user.uid);
     if (userProfile) {
+      familyLink = await backend.getFamilyLink(user.uid);
+      if (!familyLink && userProfile.familyId) familyLink = await backend.getOwnerFamilyLink(user.uid, userProfile.familyId);
+      if (userProfile.status === "active") await backend.ensureIdentityProfile(user.uid, userProfile, familyLink);
+      activeFamilyId = familyLink?.status === "active" ? familyLink.familyId : null;
+      promptAccountPickerAfterFamilyLoad = familyLink?.accountType === "owner";
+      if (familyLink?.accountType === "owner" && userProfile.activeMemberId && userProfile.activeMemberId !== user.uid) {
+        await backend.setActiveMember(user.uid, user.uid);
+        userProfile.activeMemberId = user.uid;
+      }
       state.conversations = [];
       state.classes = [];
       state.events = [];
       state.messages = {};
       state.pendingUsers = [];
-      state.family = userProfile.familyId ? { name: "Family Account", tribe: "Lamanites", members: [] } : { name: "Family Account", tribe: "Lamanites", members: [] };
+      state.family = { name: "Family Account", tribe: "Lamanites", members: [] };
       state.currentUser = { ...state.currentUser, name: userProfile.displayName || user.displayName || "School member", email: user.email, role: titleRole(userProfile.role), initials: (userProfile.displayName || user.displayName || "CT").split(/\s+/).map((part) => part[0]).slice(0,2).join("") };
       state.notificationPrefs = { ...state.notificationPrefs, ...(userProfile.notificationPrefs || {}) };
-      state.activeMemberId = user.uid;
+      state.activeMemberId = familyLink?.accountType === "linked" ? (familyLink.memberId || user.uid) : (userProfile.activeMemberId || user.uid);
+      state.page = "home";
       connectDataListeners();
     }
   } catch (error) { state.error = error.message || "Unable to read this account."; }
@@ -595,11 +688,15 @@ async function handleAuthUser(user) {
 
 function localSwitchToMember(member) {
   state.activeMemberId = member.id;
-  if (!remoteMode) {
-    state.currentUser = { name: member.name, email: `${member.name.toLowerCase().replace(/\s/g, ".")}@example.com`, role: member.role, color: member.color || "blue", initials: member.name.split(/\s+/).map((word) => word[0]).slice(0, 2).join("") };
-  } else {
-    state.currentUser = { ...state.currentUser, name: member.name, role: userProfile?.role || "Student", initials: member.name.split(/\s+/).map((word) => word[0]).slice(0, 2).join("") };
-  }
+  state.currentUser = { ...state.currentUser, name: member.name, email: member.id === authUser?.uid ? authUser.email : state.currentUser.email, role: titleRole(member.role), color: member.color || "blue", initials: member.name.split(/\s+/).map((word) => word[0]).slice(0, 2).join("") };
+  state.notificationPrefs = { messages: true, announcements: true, events: true };
+}
+
+function applyActiveMember() {
+  const member = activeFamilyMember();
+  if (!member) return;
+  state.currentUser = { ...state.currentUser, name: member.name || state.currentUser.name, role: titleRole(member.role), color: member.color || "blue", initials: member.initials || member.name.split(/\s+/).map((word) => word[0]).slice(0, 2).join("") };
+  state.notificationPrefs = { messages: true, announcements: true, events: true };
 }
 
 async function submitMessage(form) {
@@ -608,7 +705,7 @@ async function submitMessage(form) {
   if (!text || isBusy) return;
   const conversation = activeConversation();
   const message = {
-    senderName: remoteMode ? (userProfile?.displayName || authUser?.displayName || "School member") : state.currentUser.name, senderUid: authUser?.uid || "demo", text,
+    senderName: state.currentUser.name, senderUid: authUser?.uid || "demo", senderProfileId: activeIdentityId(), text,
     mine: true, time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
     senderInitials: state.currentUser.initials || "ES"
   };
@@ -641,7 +738,7 @@ async function createConversation() {
       return;
     }
     try {
-      if (backend?.enabled && authUser) await backend.addConversationMembers(conversationId, people.map((person) => person.id), people.map((person) => person.name));
+      if (backend?.enabled && authUser) await backend.addConversationMembers(conversationId, activeIdentityId(), people.map((person) => person.id), people.map((person) => person.name));
       else {
         const existingNames = (conversation.members || conversation.memberNames || []).map((name) => name === "You" ? state.currentUser.name : name);
         conversation.members = [...new Set([...existingNames, state.currentUser.name, ...people.map((person) => person.name)])];
@@ -671,8 +768,9 @@ async function createConversation() {
     title: classChat ? people[0].name : names.join(", "),
     kind: classChat ? "class" : one ? "direct" : "group",
     memberUids: [...new Set([authUser?.uid, ...people.map((person) => person.id)].filter(Boolean))],
+    memberProfileIds: [...new Set([activeIdentityId(), ...people.map((person) => person.id)].filter(Boolean))],
     memberNames: [...new Set([state.currentUser.name, ...names])],
-    createdBy: authUser?.uid || "demo", createdByRole: currentRole(),
+    createdBy: authUser?.uid || "demo", createdByIdentityId: activeIdentityId(), createdByRole: currentRole(),
     memberCount: people.length + 1, preview: "Start a conversation", color: one ? people[0].color : "purple", members: [...new Set([state.currentUser.name, ...names])]
   };
   try {
@@ -697,7 +795,7 @@ function goBack() {
     state.selectedPersonIds = [];
   }
   else if (state.page === "class-detail") { state.page = "home"; state.activeTab = "classes"; }
-  else if (state.page === "event-detail" || state.page === "create-event") { state.page = "home"; state.activeTab = "calendar"; }
+  else if (state.page === "event-detail" || state.page === "create-event" || state.page === "create-personal-event") { state.page = "home"; state.activeTab = "calendar"; }
   else if (state.page === "settings-detail" || state.page === "family") { state.page = "home"; state.activeTab = "settings"; }
   else state.page = "home";
   persist(); render();
@@ -722,23 +820,24 @@ async function handleClick(event) {
       state.selectedPersonIds = [...current]; render(); break;
     }
     case "back": goBack(); break;
-    case "account": state.page = "account"; render(); break;
+    case "account": state.page = familyLink?.accountType === "owner" && state.family.members.filter(canSelectFamilyMember).length > 1 ? "account-picker" : "account"; render(); break;
     case "switch-member": {
       const member = state.family.members.find((entry) => entry.id === id);
-      if (member && remoteMode && member.id !== authUser?.uid) {
-        const email = member.email || prompt(`Email for ${member.name}`, "");
-        if (!email) break;
-        const password = prompt(`Enter ${member.name}’s password to switch accounts`);
-        if (!password) break;
-        try { await backend.signIn(email, password); state.activeMemberId = member.id; await backend.setActiveMember(member.id, member.id); }
-        catch (error) { showToast(authMessage(error)); }
+      if (member && !canSelectFamilyMember(member)) {
+        showToast("This family profile uses a separate login or belongs to another account holder.");
       } else if (member) {
         localSwitchToMember(member);
-        if (remoteMode && authUser) { try { await backend.setActiveMember(authUser.uid, member.id); } catch {} }
-        persist(); render(); showToast(`Switched to ${member.name}`);
+        if (remoteMode && authUser) {
+          try { await backend.setActiveMember(authUser.uid, member.id); }
+          catch (error) { showToast(error.message || "Profile selection could not be saved."); break; }
+          userProfile.activeMemberId = member.id;
+          connectDataListeners();
+        }
+        state.page = "home"; persist(); render(); showToast(`Switched to ${member.name}`);
       }
       break;
     }
+    case "continue-account": state.page = "home"; persist(); render(); break;
     case "switch-role":
       if (!remoteMode && roles.includes(role)) { state.currentUser.role = role; persist(); render(); showToast(`Previewing ${role} view`); }
       break;
@@ -770,6 +869,7 @@ async function handleClick(event) {
     case "month-today": state.monthOffset = 0; state.selectedDate = todayKey; render(); break;
     case "select-date": state.selectedDate = date; render(); break;
     case "create-event": state.page = "create-event"; render(); break;
+    case "create-personal-event": state.page = "create-personal-event"; render(); break;
     case "create-class": state.page = "create-class"; render(); break;
     case "new-announcement": state.page = "create-announcement"; render(); break;
     case "edit-chat": state.page = "edit-chat"; render(); break;
@@ -792,8 +892,8 @@ async function handleClick(event) {
     case "edit-family": {
       const name = prompt("Family account name", state.family.name);
       if (name?.trim()) {
-        if (backend?.enabled && userProfile?.familyId) {
-          try { await backend.updateFamily(userProfile.familyId, { name: name.trim() }); }
+        if (backend?.enabled && activeFamilyId) {
+          try { await backend.updateFamily(activeFamilyId, { name: name.trim() }); }
           catch (error) { showToast(error.message || "Family name could not be saved."); break; }
         }
         state.family.name = name.trim(); persist(); render();
@@ -804,8 +904,56 @@ async function handleClick(event) {
       const member = state.family.members.find((entry) => entry.id === id);
       if (member) {
         const name = prompt("Family member name", member.name);
-        if (name?.trim()) { member.name = name.trim(); persist(); render(); }
+        if (name?.trim()) {
+          const updates = { name: name.trim() };
+          if (member.accountType === "managed") {
+            const role = prompt("School role: Parent, Student, Teacher, or Presidency", member.role);
+            if (role && ["Parent", "Student", "Teacher", "Presidency"].includes(role)) updates.role = role;
+            updates.grade = prompt("Grade (leave blank if not applicable)", member.note || "") || "";
+            updates.tribe = prompt("Tribe", member.tribe || "") || "";
+          }
+          try {
+            if (backend?.enabled && activeFamilyId) await backend.updateFamilyMember(activeFamilyId, id, updates);
+            Object.assign(member, updates, { note: updates.grade ?? member.note });
+            persist(); render(); showToast("Family profile updated.");
+          } catch (error) { showToast(error.message || "Family profile could not be updated."); }
+        }
       }
+      break;
+    }
+    case "make-member-independent": {
+      const member = state.family.members.find((entry) => entry.id === id);
+      if (!member || member.accountType !== "managed" || !activeFamilyId || familyLink?.accountType !== "owner" || activeIdentityId() !== authUser?.uid) break;
+      const email = prompt(`Email address for ${member.name}'s new independent login`, "");
+      if (!email?.trim()) break;
+      if (!confirm(`Create a separate Firebase login for ${member.name}? Their profile ID, classes, calendar, and messages will stay with the account.`)) break;
+      try {
+        const result = await backend.makeFamilyMemberIndependent(activeFamilyId, id, email.trim());
+        const privilegeNote = ["teacher", "presidency"].includes(String(member.role).toLowerCase()) && result.role === "student" ? " The login starts as Student; an Admin can assign staff access." : "";
+        try { await navigator.clipboard.writeText(result.setupLink); showToast(`Login setup link copied. Send it to ${member.name} at ${result.email}.${privilegeNote}`); }
+        catch { prompt(`Send this login setup link to ${member.name} (${result.email})${privilegeNote}:`, result.setupLink); }
+        state.activeMemberId = authUser.uid;
+        await backend.setActiveMember(authUser.uid, authUser.uid);
+        userProfile.activeMemberId = authUser.uid;
+        applyActiveMember(); connectDataListeners();
+        state.page = "family"; persist(); render();
+      } catch (error) { showToast(error.message || "Independent login could not be created."); }
+      break;
+    }
+    case "remove-family-member": {
+      const member = state.family.members.find((entry) => entry.id === id);
+      if (!member || !confirm(`Unlink ${member.name} from this family? Their account and stored data will remain.`)) break;
+      try {
+        if (backend?.enabled && activeFamilyId) await backend.removeFamilyMember(activeFamilyId, id);
+        state.family.members = state.family.members.filter((entry) => entry.id !== id);
+        if (state.activeMemberId === id) {
+          state.activeMemberId = authUser?.uid;
+          if (userProfile) userProfile.activeMemberId = authUser.uid;
+          state.page = "account-picker";
+          connectDataListeners();
+        }
+        persist(); render(); showToast(`${member.name} was unlinked. Their account and data were kept.`);
+      } catch (error) { showToast(error.message || "Family member could not be unlinked."); }
       break;
     }
     case "join-class": state.showJoinable = !state.showJoinable; state.search = ""; state.page = "home"; state.activeTab = "classes"; render(); break;
@@ -815,7 +963,7 @@ async function handleClick(event) {
       if (item.joined) { const chat = state.conversations.find((entry) => entry.classId === id || entry.id === id); chat ? openChat(chat.id) : showToast("Your class chat will appear when the teacher creates it."); }
       else if (backend?.enabled && authUser) {
         try {
-          const result = await backend.requestClassJoin(id, authUser, item.name);
+          const result = await backend.requestClassJoin(id, authUser, item.name, activeIdentityId());
           if (result.joined) { item.joined = true; state.joinedRequests = state.joinedRequests.filter((classId) => classId !== id); showToast(`You joined ${item.name}.`); }
           else { state.joinedRequests = [...new Set([...state.joinedRequests, id])]; showToast("Join request sent to your teacher."); }
         }
@@ -840,7 +988,7 @@ async function handleClick(event) {
     case "delete-chat":
       if (confirm(`Delete “${activeConversation().title}” for all members? This cannot be undone.`)) {
         if (backend?.enabled && authUser) {
-          try { await backend.deleteConversation(state.activeConversationId); }
+          try { await backend.deleteConversation(state.activeConversationId, activeIdentityId()); }
           catch (error) { showToast(error.message || "Conversation could not be deleted."); break; }
         } else { state.conversations = state.conversations.filter((entry) => entry.id !== state.activeConversationId); delete state.messages[state.activeConversationId]; }
         state.pinnedConversationIds = state.pinnedConversationIds.filter((conversationId) => conversationId !== state.activeConversationId);
@@ -849,7 +997,7 @@ async function handleClick(event) {
       break;
     case "leave-chat":
       if (backend?.enabled && authUser) {
-        try { await backend.leaveConversation(state.activeConversationId); }
+        try { await backend.leaveConversation(state.activeConversationId, activeIdentityId()); }
         catch (error) { showToast(error.message || "Could not leave this conversation."); break; }
       } else state.conversations = state.conversations.filter((entry) => entry.id !== state.activeConversationId);
       state.pinnedConversationIds = state.pinnedConversationIds.filter((conversationId) => conversationId !== state.activeConversationId);
@@ -918,9 +1066,19 @@ async function handleSubmit(event) {
   if (form.id === "profile-form") {
     const name = String(data.get("name") || "").trim();
     if (name) {
+      if (backend?.enabled && authUser) {
+        try {
+          const activeMember = activeFamilyMember();
+          if (activeMember?.accountType === "managed" && activeMember.id === activeIdentityId() && activeFamilyId) {
+            await backend.updateFamilyMember(activeFamilyId, activeMember.id, { name });
+            activeMember.name = name;
+          } else {
+            await backend.updateProfile(authUser.uid, { displayName: name });
+          }
+        } catch (error) { showToast(error.message || "Profile could not be saved."); return; }
+      }
       state.currentUser.name = name;
       state.currentUser.initials = name.split(/\s+/).map((part) => part[0]).slice(0,2).join("");
-      if (backend?.enabled && authUser) { try { await backend.updateProfile(authUser.uid, { displayName: name }); } catch (error) { showToast(error.message || "Profile could not be saved."); } }
       persist(); showToast("Profile saved."); render();
     }
   } else if (form.id === "family-member-form") {
@@ -929,36 +1087,49 @@ async function handleSubmit(event) {
     const role = String(data.get("role") || "Student");
     const grade = String(data.get("grade") || "").trim();
     const tribe = String(data.get("tribe") || "");
-    const member = { id: `member-${Date.now()}`, name, role, note: grade, tribe: role === "Student" ? tribe : "", color: colorClasses[(state.family.members.length % (colorClasses.length - 1)) + 1] };
-    if (backend?.enabled && authUser && userProfile?.familyId) {
+    const accountType = String(data.get("accountType") || "managed");
+    if (backend?.enabled && authUser && activeFamilyId) {
       const email = String(data.get("email") || "").trim();
+      if (accountType === "linked" && !email) { showToast("Enter the email address for the existing personal account."); return; }
       try {
-        const invitation = await backend.addFamilyMember(userProfile.familyId, { name, email, role, grade, tribe });
+        const invitation = await backend.addFamilyMember(activeFamilyId, { name, email, role, grade, tribe, accountType });
         state.addingMember = false;
-        const link = invitation?.setupLink || "";
-        if (link && navigator.clipboard?.writeText) {
-          try { await navigator.clipboard.writeText(link); showToast(`Account created. Setup link copied for ${name}.`); }
-          catch { prompt(`Share this secure setup link with ${name}:`, link); }
-        } else if (link) prompt(`Share this secure setup link with ${name}:`, link);
-        else showToast(`${name}’s account invitation is ready.`);
+        if (invitation?.code) {
+          try { await navigator.clipboard.writeText(invitation.code); showToast(`Invitation code copied. Send it to ${name}; they must sign in with ${email}.`); }
+          catch { prompt(`Send this invitation code to ${name} (${email}):`, invitation.code); }
+        } else showToast(`${name}’s managed subaccount was added.`);
         persist(); render(); return;
-      } catch (error) { showToast(error.message || "Family member account could not be created."); return; }
+      } catch (error) { showToast(error.message || "Family member could not be added."); return; }
     }
-    state.family.members.push(member); state.addingMember = false; persist(); render(); showToast(`${name} added to your family.`);
+    state.family.members.push({ id: `member-${Date.now()}`, name, role, note: grade, tribe, accountType: "managed", color: colorClasses[(state.family.members.length % (colorClasses.length - 1)) + 1] }); state.addingMember = false; persist(); render(); showToast(`${name} added to your family.`);
   } else if (form.id === "family-create-form") {
     const name = String(data.get("name") || "").trim();
     const tribe = String(data.get("tribe") || "Lamanites");
     if (!name) return;
     if (backend?.enabled && authUser) {
       try {
+        familyLink = null;
         const familyId = await backend.createFamily(authUser.uid, { name, tribe, ownerName: userProfile?.displayName || authUser.displayName || "Family Account Holder" });
-        userProfile.familyId = familyId;
-        state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", color: "purple" }] };
+        activeFamilyId = familyId;
+        familyLink = { familyId, memberId: authUser.uid, accountType: "owner", status: "active" };
+        userProfile.activeMemberId = authUser.uid;
+        state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", accountType: "owner", color: "purple" }] };
         connectDataListeners(); state.page = "family"; persist(); render(); showToast("Family account created.");
       } catch (error) { showToast(error.message || "Family account could not be created."); }
     } else {
       state.family.name = name; state.family.tribe = tribe; state.page = "family"; persist(); render();
     }
+  } else if (form.id === "family-link-form") {
+    const code = String(data.get("code") || "").trim();
+    if (!backend?.enabled || !authUser) { showToast("Sign in to your existing personal account before linking it."); return; }
+    try {
+      const linked = await backend.acceptFamilyInvite(code);
+      familyLink = { familyId: linked.familyId, memberId: linked.memberId, accountType: "linked", status: "active" };
+      activeFamilyId = linked.familyId;
+      state.activeMemberId = linked.memberId;
+      userProfile.activeMemberId = linked.memberId;
+      connectDataListeners(); state.page = "family"; render(); showToast("Your existing account is now linked to the family.");
+    } catch (error) { showToast(error.message || "This account could not be linked."); }
   } else if (form.id === "event-form") {
     const eventRecord = { id: `event-${Date.now()}`, title: String(data.get("title") || "").trim(), date: String(data.get("date") || todayKey), time: new Date(`2000-01-01T${data.get("time")}`).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), kind: String(data.get("kind") || "event"), detail: String(data.get("detail") || "").trim(), link: String(data.get("link") || "").trim(), color: "purple" };
     try {
@@ -966,11 +1137,18 @@ async function handleSubmit(event) {
       else { state.events.push(eventRecord); persist(); }
       state.selectedDate = eventRecord.date; state.activeTab = "calendar"; state.page = "home"; render(); showToast("School event saved.");
     } catch (error) { showToast(error.message || "Event could not be saved."); }
+  } else if (form.id === "personal-event-form") {
+    const eventRecord = { title: String(data.get("title") || "").trim(), date: String(data.get("date") || todayKey), time: new Date(`2000-01-01T${data.get("time")}`).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), kind: String(data.get("kind") || "event"), detail: String(data.get("detail") || "").trim(), link: "", color: "purple" };
+    try {
+      if (backend?.enabled && authUser) await backend.createPersonalEvent(activeIdentityId(), eventRecord);
+      else { state.events.push({ ...eventRecord, id: `personal-${Date.now()}`, calendarScope: "personal" }); persist(); }
+      state.selectedDate = eventRecord.date; state.activeTab = "calendar"; state.page = "home"; render(); showToast("Added to this profile’s calendar.");
+    } catch (error) { showToast(error.message || "Personal calendar item could not be saved."); }
   } else if (form.id === "class-form") {
     const classRecord = {
       name: String(data.get("name") || "").trim(), title: String(data.get("name") || "").trim(),
       teacher: String(data.get("teacher") || "").trim(), description: String(data.get("description") || "").trim(),
-      openEnrollment: data.get("openEnrollment") === "true", memberCount: 1, members: 1, color: "purple", joined: true
+      openEnrollment: data.get("openEnrollment") === "true", memberCount: 1, members: 1, memberProfileIds: [activeIdentityId()], identityId: activeIdentityId(), color: "purple", joined: true
     };
     try {
       if (backend?.enabled && authUser) classRecord.id = await backend.createClass(classRecord);
@@ -984,13 +1162,14 @@ async function handleSubmit(event) {
     const memberUids = [...new Set([authUser?.uid, ...recipients.map((person) => person.id)].filter(Boolean))];
     const conversation = {
       title, kind: "announcement", memberUids, memberNames: recipients.map((person) => person.displayName || person.name).filter(Boolean),
-      createdBy: authUser?.uid || "demo", createdByRole: currentRole(), memberCount: memberUids.length,
+      memberProfileIds: [...new Set([activeIdentityId(), ...recipients.map((person) => person.id)].filter(Boolean))],
+      createdBy: authUser?.uid || "demo", createdByIdentityId: activeIdentityId(), createdByRole: currentRole(), memberCount: memberUids.length,
       preview: text, color: "blue", members: ["School Community"]
     };
     try {
       if (backend?.enabled && authUser) {
         const id = await backend.createConversation(conversation);
-        await backend.sendMessage(id, { senderName: userProfile?.displayName || authUser.displayName, senderUid: authUser.uid, senderInitials: state.currentUser.initials, text });
+        await backend.sendMessage(id, { senderName: state.currentUser.name, senderUid: authUser.uid, senderProfileId: activeIdentityId(), senderInitials: state.currentUser.initials, text });
       } else {
         conversation.id = `announcement-${Date.now()}`; conversation.time = "Now"; conversation.unread = 0;
         state.conversations.unshift(conversation); state.messages[conversation.id] = [{ sender: state.currentUser.name, senderName: state.currentUser.name, senderUid: "demo", text, time: "Now", mine: true }]; persist();
@@ -1030,8 +1209,8 @@ async function handleFileChange(event) {
     try { attachment = { ...attachment, ...(await backend.uploadAttachment(conversation.id, authUser.uid, file)) }; }
     catch (error) { showToast(error.message || "File upload failed."); event.target.value = ""; return; }
   }
-  const senderName = remoteMode ? (userProfile?.displayName || authUser?.displayName || "School member") : state.currentUser.name;
-  const message = { senderName, senderUid: authUser?.uid || "demo", sender: senderName, senderInitials: state.currentUser.initials, text: "", mine: true, time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), attachmentName: attachment.name, attachmentSize: attachment.size, attachmentType: attachment.type, attachmentUrl: attachment.url, attachmentPath: attachment.path };
+  const senderName = state.currentUser.name;
+  const message = { senderName, senderUid: authUser?.uid || "demo", senderProfileId: activeIdentityId(), sender: senderName, senderInitials: state.currentUser.initials, text: "", mine: true, time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), attachmentName: attachment.name, attachmentSize: attachment.size, attachmentType: attachment.type, attachmentUrl: attachment.url, attachmentPath: attachment.path };
   if (backend?.enabled && authUser) {
     try { await backend.sendMessage(conversation.id, message); }
     catch (error) { showToast(error.message || "Attachment message could not be sent."); }
@@ -1058,8 +1237,8 @@ async function handlePreference(event) {
   persist();
   if (["messages", "announcements", "events"].includes(pref) && remoteMode && authUser) {
     try {
-      userProfile.notificationPrefs = { ...state.notificationPrefs };
-      await backend.updateProfile(authUser.uid, { notificationPrefs: userProfile.notificationPrefs, updatedAt: new Date() });
+      if (activeIdentityId() === authUser.uid) userProfile.notificationPrefs = { ...state.notificationPrefs };
+      await backend.updateIdentitySettings(activeIdentityId(), state.notificationPrefs);
     } catch (error) { showToast(error.message || "Notification preference could not be saved."); }
   }
 }
@@ -1070,7 +1249,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=12").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=13").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;

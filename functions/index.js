@@ -19,12 +19,41 @@ async function requireActiveSchoolUser(uid) {
   return user;
 }
 
+async function getOwnedIdentityProfile(uid, identityId, user) {
+  if (identityId === uid) {
+    const profile = await db.doc(`profiles/${uid}`).get();
+    return profile.exists ? profile.data() : { displayName: user.displayName };
+  }
+  const snapshot = await db.doc(`profiles/${identityId}`).get();
+  if (!snapshot.exists) throw new HttpsError("permission-denied", "This family profile is not available to your account.");
+  const profile = snapshot.data();
+  const isManaged = profile.accountType === "managed" && profile.managerUid === uid;
+  const isIndependent = profile.accountType !== "managed";
+  if (profile.ownerUid !== uid || profile.status !== "active" || (!isManaged && !isIndependent)) {
+    throw new HttpsError("permission-denied", "This family profile is not available to your account.");
+  }
+  return profile;
+}
+
+async function getActiveIdentityProfile(uid, requestedIdentityId, user) {
+  const linkSnapshot = await db.doc(`familyLinks/${uid}`).get();
+  const linkedIdentityId = linkSnapshot.exists && linkSnapshot.data().status === "active"
+    ? linkSnapshot.data().memberId : null;
+  const activeIdentityId = user.activeMemberId || linkedIdentityId || uid;
+  if (requestedIdentityId && requestedIdentityId !== activeIdentityId) {
+    throw new HttpsError("permission-denied", "Switch to this family profile before using it.");
+  }
+  return { identityId: activeIdentityId, profile: await getOwnedIdentityProfile(uid, activeIdentityId, user) };
+}
+
 exports.createClass = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before creating a class.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
-  if (!new Set(["teacher", "presidency", "admin"]).has(user.role)) {
-    throw new HttpsError("permission-denied", "Only verified teachers and school administrators can create classes.");
+  const identityId = String(request.data?.identityId || uid);
+  const { profile: identityProfile } = await getActiveIdentityProfile(uid, identityId, user);
+  if (identityId !== uid || !new Set(["teacher", "presidency", "admin"]).has(user.role)) {
+    throw new HttpsError("permission-denied", "Only verified staff using their own school profile can create classes.");
   }
   const name = String(request.data?.name || request.data?.title || "").trim();
   const teacher = String(request.data?.teacher || user.displayName || "Teacher").trim();
@@ -34,20 +63,21 @@ exports.createClass = onCall({ region: "us-central1", maxInstances: 10 }, async 
     throw new HttpsError("invalid-argument", "Enter a class name, teacher, and description within the size limits.");
   }
 
+  const displayName = identityProfile.displayName || user.displayName || request.auth.token.name || teacher;
+
   const classRef = db.collection("classes").doc();
   const conversationRef = db.collection("conversations").doc();
-  const displayName = user.displayName || request.auth.token.name || teacher;
   const memberNames = [displayName];
   const now = FieldValue.serverTimestamp();
   const batch = db.batch();
   batch.set(classRef, {
     name, title: name, teacher, teacherUid: uid, description, openEnrollment,
-    memberUids: [uid], memberCount: 1, members: 1, color: "purple", icon: "cap",
+    memberUids: [uid], memberProfileIds: [identityId], memberCount: 1, members: 1, color: "purple", icon: "cap",
     schoolId: "ctla", chatId: conversationRef.id, createdAt: now, updatedAt: now
   });
   batch.set(conversationRef, {
     title: name, kind: "class", classId: classRef.id, schoolId: "ctla",
-    createdBy: uid, createdByRole: user.role, memberUids: [uid], memberNames,
+    createdBy: uid, createdByIdentityId: identityId, createdByRole: user.role, memberUids: [uid], memberProfileIds: [identityId], memberNames,
     members: memberNames, memberCount: 1, color: "purple", preview: "Class chat is ready",
     createdAt: now, updatedAt: now
   });
@@ -59,22 +89,28 @@ exports.joinClass = onCall({ region: "us-central1", maxInstances: 10 }, async (r
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before joining a class.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
+  const identityId = String(request.data?.identityId || uid);
+  const { profile: identityProfile } = await getActiveIdentityProfile(uid, identityId, user);
+  const identityName = identityProfile.displayName || user.displayName || request.auth.token.name || "School member";
   const classId = String(request.data?.classId || "");
   if (!classId || classId.includes("/")) throw new HttpsError("invalid-argument", "Class ID is required.");
   const classRef = db.doc(`classes/${classId}`);
   const classSnapshot = await classRef.get();
   if (!classSnapshot.exists || classSnapshot.data().schoolId !== "ctla") throw new HttpsError("not-found", "Class not found.");
   const classData = classSnapshot.data();
-  if ((classData.memberUids || []).includes(uid)) return { joined: true, alreadyMember: true };
-  if (!new Set(["parent", "student"]).has(user.role)) throw new HttpsError("permission-denied", "Only Parent and Student accounts can request class enrollment.");
+  if ((classData.memberProfileIds || classData.memberUids || []).includes(identityId)) return { joined: true, alreadyMember: true };
+  if (!new Set(["parent", "student"]).has(String(identityProfile.role || "student").toLowerCase())) {
+    throw new HttpsError("permission-denied", "Only Parent and Student profiles can request class enrollment.");
+  }
 
   if (!classData.openEnrollment) {
-    const requestRef = classRef.collection("joinRequests").doc(uid);
+    const requestId = `${uid}_${identityId}`;
+    const requestRef = classRef.collection("joinRequests").doc(requestId);
     await requestRef.set({
-      uid, displayName: user.displayName || request.auth.token.name || "School member",
+      uid, identityId, displayName: identityName,
       className: classData.name, status: "pending", createdAt: FieldValue.serverTimestamp()
     }, { merge: true });
-    return { joined: false, requested: true };
+    return { joined: false, requested: true, requestId };
   }
 
   const conversationId = classData.chatId;
@@ -84,10 +120,12 @@ exports.joinClass = onCall({ region: "us-central1", maxInstances: 10 }, async (r
     const [latestClass, latestConversation] = await Promise.all([transaction.get(classRef), transaction.get(conversationRef)]);
     if (!latestClass.exists || !latestConversation.exists) throw new HttpsError("not-found", "Class or class chat not found.");
     const memberUids = [...new Set([...(latestClass.data().memberUids || []), uid])];
-    const memberNames = [...new Set([...(latestConversation.data().memberNames || []), user.displayName || request.auth.token.name || "School member"])];
-    transaction.update(classRef, { memberUids, memberCount: memberUids.length, members: memberUids.length, updatedAt: FieldValue.serverTimestamp() });
-    transaction.update(conversationRef, { memberUids, memberNames, members: memberNames, memberCount: memberUids.length, updatedAt: FieldValue.serverTimestamp() });
-    transaction.delete(classRef.collection("joinRequests").doc(uid));
+    const memberProfileIds = [...new Set([...(latestClass.data().memberProfileIds || latestClass.data().memberUids || []), identityId])];
+    const conversationProfileIds = [...new Set([...(latestConversation.data().memberProfileIds || latestConversation.data().memberUids || []), identityId])];
+    const memberNames = [...new Set([...(latestConversation.data().memberNames || []), identityName])];
+    transaction.update(classRef, { memberUids, memberProfileIds, memberCount: memberProfileIds.length, members: memberProfileIds.length, updatedAt: FieldValue.serverTimestamp() });
+    transaction.update(conversationRef, { memberUids, memberProfileIds: conversationProfileIds, memberNames, members: memberNames, memberCount: conversationProfileIds.length, updatedAt: FieldValue.serverTimestamp() });
+    transaction.delete(classRef.collection("joinRequests").doc(`${uid}_${identityId}`));
   });
   return { joined: true, requested: false };
 });
@@ -96,6 +134,7 @@ exports.respondToClassJoin = onCall({ region: "us-central1", maxInstances: 10 },
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before reviewing class requests.");
   const callerUid = request.auth.uid;
   const caller = await requireActiveSchoolUser(callerUid);
+  const { identityId: callerIdentityId } = await getActiveIdentityProfile(callerUid, request.data?.identityId, caller);
   const classId = String(request.data?.classId || "");
   const userId = String(request.data?.userId || "");
   const approve = request.data?.approve === true;
@@ -104,13 +143,18 @@ exports.respondToClassJoin = onCall({ region: "us-central1", maxInstances: 10 },
   const requestRef = classRef.collection("joinRequests").doc(userId);
   const initialClass = await classRef.get();
   if (!initialClass.exists || initialClass.data().schoolId !== "ctla") throw new HttpsError("not-found", "Class not found.");
-  if (caller.role !== "presidency" && caller.role !== "admin" && (caller.role !== "teacher" || initialClass.data().teacherUid !== callerUid)) {
+  if (callerIdentityId !== callerUid || (caller.role !== "presidency" && caller.role !== "admin" && (caller.role !== "teacher" || initialClass.data().teacherUid !== callerUid))) {
     throw new HttpsError("permission-denied", "Only the class teacher, Presidency, or Admin can review enrollment.");
   }
-  const memberSnapshot = await db.doc(`directory/${userId}`).get();
+  const pendingSnapshot = await requestRef.get();
+  if (!pendingSnapshot.exists || pendingSnapshot.data().status !== "pending") throw new HttpsError("not-found", "This enrollment request is no longer pending.");
+  const requestUid = pendingSnapshot.data().uid || userId;
+  const identityId = pendingSnapshot.data().identityId || requestUid;
+  const memberSnapshot = await db.doc(`directory/${requestUid}`).get();
   if (!memberSnapshot.exists || memberSnapshot.data().schoolId !== "ctla" || memberSnapshot.data().status !== "active") {
     throw new HttpsError("failed-precondition", "This account is no longer an approved school member.");
   }
+  const profileSnapshot = identityId === requestUid ? null : await db.doc(`profiles/${identityId}`).get();
   const chatId = initialClass.data().chatId;
   if (approve && !chatId) throw new HttpsError("failed-precondition", "The class chat is missing.");
   const conversationRef = chatId ? db.doc(`conversations/${chatId}`) : null;
@@ -124,150 +168,98 @@ exports.respondToClassJoin = onCall({ region: "us-central1", maxInstances: 10 },
       throw new HttpsError("not-found", "This enrollment request is no longer pending.");
     }
     if (approve) {
-      const memberUids = [...new Set([...(classSnapshot.data().memberUids || []), userId])];
-      const displayName = memberSnapshot.data().displayName || requestSnapshot.data().displayName || "School member";
+      const memberUids = [...new Set([...(classSnapshot.data().memberUids || []), requestUid])];
+      const memberProfileIds = [...new Set([...(classSnapshot.data().memberProfileIds || classSnapshot.data().memberUids || []), identityId])];
+      const conversationProfileIds = [...new Set([...(chatSnapshot.data().memberProfileIds || chatSnapshot.data().memberUids || []), identityId])];
+      const displayName = profileSnapshot?.data()?.displayName || memberSnapshot.data().displayName || requestSnapshot.data().displayName || "School member";
       const memberNames = [...new Set([...(chatSnapshot.data().memberNames || []), displayName])];
-      transaction.update(classRef, { memberUids, memberCount: memberUids.length, members: memberUids.length, updatedAt: FieldValue.serverTimestamp() });
-      transaction.update(conversationRef, { memberUids, memberNames, members: memberNames, memberCount: memberUids.length, updatedAt: FieldValue.serverTimestamp() });
+      transaction.update(classRef, { memberUids, memberProfileIds, memberCount: memberProfileIds.length, members: memberProfileIds.length, updatedAt: FieldValue.serverTimestamp() });
+      transaction.update(conversationRef, { memberUids, memberProfileIds: conversationProfileIds, memberNames, members: memberNames, memberCount: memberProfileIds.length, updatedAt: FieldValue.serverTimestamp() });
     }
     transaction.delete(requestRef);
   });
   return { approved: approve };
 });
 
+// Reuse the existing callable name so Firebase updates its deployed invoker instead of creating
+// a new Cloud Run service that would need a fresh allUsers IAM grant.
 exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before creating a family account.");
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before creating an independent family login.");
   const uid = request.auth.uid;
-  const name = String(request.data?.name || "").trim();
-  const tribe = String(request.data?.tribe || "Lamanites").trim();
-  const userRef = db.doc(`users/${uid}`);
-  const userSnapshot = await userRef.get();
-  const user = userSnapshot.data();
-  if (!userSnapshot.exists || user.status !== "active" || user.schoolId !== "ctla" || user.role !== "parent") {
-    throw new HttpsError("permission-denied", "Only a verified parent can create a family account.");
-  }
-  if (user.familyId) throw new HttpsError("already-exists", "This account already belongs to a family.");
-  if (!name || name.length > 100 || tribe.length > 60) {
-    throw new HttpsError("invalid-argument", "Enter a family name and tribe.");
+  const user = await requireActiveSchoolUser(uid);
+  const { identityId: activeIdentityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
+  if (activeIdentityId !== uid) throw new HttpsError("permission-denied", "Switch to the family account holder profile to change family logins.");
+  const familyId = String(request.data?.familyId || "");
+  const memberId = String(request.data?.memberId || "");
+  const email = String(request.data?.email || "").trim().toLowerCase();
+  if (!familyId || familyId.includes("/") || !memberId || memberId.includes("/") || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HttpsError("invalid-argument", "Enter a valid email for this family member.");
   }
 
-  const familyRef = db.collection("families").doc();
-  const family = {
-    name, tribe, ownerUid: uid, memberUids: [uid], schoolId: "ctla", createdAt: FieldValue.serverTimestamp()
-  };
-  const member = {
-    uid, name: user.displayName || request.auth.token.name || "Family Account Holder",
-    email: user.email || request.auth.token.email || "", role: "parent", grade: "", tribe,
-    status: "active", createdAt: FieldValue.serverTimestamp()
-  };
-  const batch = db.batch();
-  batch.set(familyRef, family);
-  batch.set(familyRef.collection("members").doc(uid), member);
-  batch.update(userRef, { familyId: familyRef.id });
-  await batch.commit();
-  return { familyId: familyRef.id };
-});
-
-exports.inviteFamilyMember = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before inviting a family member.");
-
-  const callerUid = request.auth.uid;
-  const { familyId, name, email, role, grade = "", tribe = "" } = request.data || {};
-  const normalizedRole = String(role || "").toLowerCase();
-  const cleanName = String(name || "").trim();
-  const cleanEmail = String(email || "").trim().toLowerCase();
-
-  if (!familyId || !cleanName || cleanName.length > 100 || !cleanEmail || cleanEmail.length > 254) {
-    throw new HttpsError("invalid-argument", "Enter a family, full name, and valid email address.");
-  }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-    throw new HttpsError("invalid-argument", "Enter a valid email address for the family member.");
-  }
-  // Family owners can create Parent or Student accounts. Only school staff can grant staff roles.
-  if (!new Set(["parent", "student"]).has(normalizedRole)) {
-    throw new HttpsError("permission-denied", "Family accounts can add Parent or Student roles. School staff assign teacher and Presidency roles.");
-  }
-
-  const callerRef = db.doc(`users/${callerUid}`);
   const familyRef = db.doc(`families/${familyId}`);
-  const [callerSnapshot, familySnapshot] = await Promise.all([callerRef.get(), familyRef.get()]);
-  const caller = callerSnapshot.data();
-  const family = familySnapshot.data();
-  if (!callerSnapshot.exists || caller.status !== "active" || caller.schoolId !== "ctla" || caller.role !== "parent") {
-    throw new HttpsError("permission-denied", "Only a verified parent account can add family accounts.");
+  const memberRef = db.doc(`families/${familyId}/members/${memberId}`);
+  const profileRef = db.doc(`profiles/${memberId}`);
+  const [familySnapshot, memberSnapshot, profileSnapshot] = await Promise.all([familyRef.get(), memberRef.get(), profileRef.get()]);
+  if (!familySnapshot.exists || familySnapshot.data().ownerUid !== uid || !memberSnapshot.exists || !profileSnapshot.exists) {
+    throw new HttpsError("permission-denied", "Only the family account holder can change this member's login.");
   }
-  if (!familySnapshot.exists || family.ownerUid !== callerUid || !family.memberUids?.includes(callerUid) || caller.familyId !== familyId) {
-    throw new HttpsError("permission-denied", "You must own this family account to add a member.");
-  }
-  if ((family.memberUids || []).length >= 12) {
-    throw new HttpsError("resource-exhausted", "Family accounts can contain up to 12 members.");
+  const member = memberSnapshot.data();
+  const profile = profileSnapshot.data();
+  if (member.accountType !== "managed" || member.status !== "active"
+      || profile.accountType !== "managed" || profile.ownerUid !== uid || profile.managerUid !== uid || profile.status !== "active") {
+    throw new HttpsError("failed-precondition", "Only an active managed subaccount can become independent.");
   }
 
   let createdUser;
   try {
+    try { await auth.getUserByEmail(email); throw new HttpsError("already-exists", "That email already has a sign-in. Use the link existing account option instead."); }
+    catch (error) { if (error instanceof HttpsError) throw error; if (error.code !== "auth/user-not-found") throw error; }
+    try { await auth.getUser(memberId); throw new HttpsError("already-exists", "This profile ID is already in use by a sign-in. Contact school support."); }
+    catch (error) { if (error instanceof HttpsError) throw error; if (error.code !== "auth/user-not-found") throw error; }
+    const role = ["parent", "student"].includes(profile.role) ? profile.role : "student";
     createdUser = await auth.createUser({
-      email: cleanEmail,
-      displayName: cleanName,
-      password: randomBytes(32).toString("base64url"),
-      emailVerified: false
+      uid: memberId,
+      email, displayName: profile.displayName || member.name || "School member",
+      password: randomBytes(32).toString("base64url"), emailVerified: false
     });
-    const user = {
-      displayName: cleanName,
-      email: cleanEmail,
-      role: normalizedRole,
-      requestedRole: normalizedRole,
-      status: "active",
-      schoolId: "ctla",
-      familyId,
-      createdBy: callerUid,
-      createdAt: FieldValue.serverTimestamp()
-    };
-    const member = {
-      uid: createdUser.uid,
-      name: cleanName,
-      email: cleanEmail,
-      role: normalizedRole,
-      grade: String(grade).slice(0, 40),
-      tribe: String(tribe).slice(0, 60),
-      status: "active",
-      createdAt: FieldValue.serverTimestamp()
-    };
-
-    // Generate the setup link before committing the account records so a failed link
-    // does not leave an unusable family account behind.
-    const setupLink = await auth.generatePasswordResetLink(cleanEmail);
+    const setupLink = await auth.generatePasswordResetLink(email);
+    const now = FieldValue.serverTimestamp();
     const batch = db.batch();
-    batch.set(db.doc(`users/${createdUser.uid}`), user);
-    batch.set(db.doc(`directory/${createdUser.uid}`), {
-      displayName: cleanName, role: normalizedRole, schoolId: "ctla", status: "active"
+    batch.update(db.doc(`users/${uid}`), { activeMemberId: uid, updatedAt: now });
+    batch.set(db.doc(`users/${createdUser.uid}`), {
+      displayName: profile.displayName || member.name || "School member", email, role,
+      requestedRole: profile.role || role, status: "active", schoolId: "ctla",
+      createdBy: uid, createdAt: now
     });
-    batch.set(db.doc(`families/${familyId}/members/${createdUser.uid}`), member);
-    batch.update(familyRef, {
-      memberUids: FieldValue.arrayUnion(createdUser.uid),
-      updatedAt: FieldValue.serverTimestamp()
+    batch.set(db.doc(`directory/${createdUser.uid}`), {
+      displayName: profile.displayName || member.name || "School member", role, status: "active", schoolId: "ctla"
+    });
+    batch.update(profileRef, {
+      ownerUid: createdUser.uid, linkedUid: createdUser.uid, accountType: "linked",
+      role, updatedAt: now, managerUid: FieldValue.delete()
+    });
+    batch.update(memberRef, {
+      uid: createdUser.uid, ownerUid: createdUser.uid, linkedUid: createdUser.uid,
+      accountType: "linked", role, linkedAt: now, updatedAt: now
+    });
+    batch.set(db.doc(`familyLinks/${createdUser.uid}`), {
+      familyId, memberId, accountType: "linked", ownerUid: createdUser.uid, status: "active", updatedAt: now
     });
     await batch.commit();
-    return { uid: createdUser.uid, email: cleanEmail, setupLink };
+    return { uid: createdUser.uid, email, setupLink, memberId, role };
   } catch (error) {
-    if (createdUser) {
-      await Promise.allSettled([
-        auth.deleteUser(createdUser.uid),
-        db.doc(`users/${createdUser.uid}`).delete(),
-        db.doc(`directory/${createdUser.uid}`).delete(),
-        db.doc(`families/${familyId}/members/${createdUser.uid}`).delete()
-      ]);
-    }
+    if (createdUser) await auth.deleteUser(createdUser.uid).catch(() => {});
     if (error instanceof HttpsError) throw error;
-    if (error.code === "auth/email-already-exists") throw new HttpsError("already-exists", "That email already has an account. Ask the member to sign in or contact the school office.");
-    console.error("Family member provisioning failed", error);
-    throw new HttpsError("internal", "The family account could not be created. Please try again.");
+    console.error("Independent family login setup failed", error);
+    throw new HttpsError("internal", "Could not create this family member's login. Please try again.");
   }
 });
 
 exports.leaveConversation = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before leaving a conversation.");
   const uid = request.auth.uid;
-  await requireActiveSchoolUser(uid);
+  const user = await requireActiveSchoolUser(uid);
+  const { identityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   const conversationId = String(request.data?.conversationId || "");
   if (!conversationId || conversationId.includes("/")) throw new HttpsError("invalid-argument", "Conversation ID is required.");
   const conversationRef = db.doc(`conversations/${conversationId}`);
@@ -276,14 +268,22 @@ exports.leaveConversation = onCall({ region: "us-central1", maxInstances: 10 }, 
     const snapshot = await transaction.get(conversationRef);
     if (!snapshot.exists) throw new HttpsError("not-found", "This conversation no longer exists.");
     const conversation = snapshot.data();
-    if (conversation.schoolId !== "ctla" || !conversation.memberUids?.includes(uid)) {
+    const memberProfileIds = Array.isArray(conversation.memberProfileIds) ? conversation.memberProfileIds : conversation.memberUids || [];
+    if (conversation.schoolId !== "ctla" || !memberProfileIds.includes(identityId)) {
       throw new HttpsError("permission-denied", "You are not a member of this conversation.");
     }
-    const memberUids = conversation.memberUids.filter((memberUid) => memberUid !== uid);
-    if (memberUids.length === 0) {
+    if (memberProfileIds.length <= 1) {
       throw new HttpsError("failed-precondition", "Delete the conversation if you are its last member.");
     }
-    transaction.update(conversationRef, { memberUids, updatedAt: FieldValue.serverTimestamp() });
+    const nextProfileIds = [...memberProfileIds];
+    const profileIndex = nextProfileIds.indexOf(identityId);
+    nextProfileIds.splice(profileIndex, 1);
+    const memberNames = [...(conversation.memberNames || [])];
+    if (profileIndex < memberNames.length) memberNames.splice(profileIndex, 1);
+    const updates = { memberNames, memberCount: nextProfileIds.length, updatedAt: FieldValue.serverTimestamp() };
+    if (Array.isArray(conversation.memberProfileIds)) updates.memberProfileIds = nextProfileIds;
+    else updates.memberUids = (conversation.memberUids || []).filter((memberUid) => memberUid !== uid);
+    transaction.update(conversationRef, updates);
   });
   return { success: true };
 });
@@ -292,13 +292,18 @@ exports.deleteConversation = onCall({ region: "us-central1", maxInstances: 10 },
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before deleting a conversation.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
+  const { identityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   const conversationId = String(request.data?.conversationId || "");
   if (!conversationId || conversationId.includes("/")) throw new HttpsError("invalid-argument", "Conversation ID is required.");
   const conversationRef = db.doc(`conversations/${conversationId}`);
   const snapshot = await conversationRef.get();
   if (!snapshot.exists) return { success: true };
   const conversation = snapshot.data();
-  if (conversation.schoolId !== "ctla" || (conversation.createdBy !== uid && !["presidency", "admin"].includes(user.role))) {
+  const isCreator = Array.isArray(conversation.memberProfileIds)
+    ? conversation.createdByIdentityId === identityId && conversation.memberProfileIds.includes(identityId)
+    : conversation.createdBy === uid && identityId === uid;
+  const isSchoolAdmin = identityId === uid && ["presidency", "admin"].includes(user.role);
+  if (conversation.schoolId !== "ctla" || (!isCreator && !isSchoolAdmin)) {
     throw new HttpsError("permission-denied", "Only the conversation creator, Presidency, or Admin can delete this conversation.");
   }
   await Promise.all([
@@ -312,23 +317,28 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before adding members.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
+  const { identityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   const conversationId = String(request.data?.conversationId || "");
   const requested = request.data?.memberUids;
   if (!conversationId || conversationId.includes("/") || !Array.isArray(requested) || requested.length < 1 || requested.length > 50) {
     throw new HttpsError("invalid-argument", "Choose one to 50 school members.");
   }
-  const newUids = [...new Set(requested.map(String).filter((memberUid) => memberUid && memberUid !== uid))];
+  let newUids = [...new Set(requested.map(String).filter((memberUid) => memberUid && memberUid !== uid))];
   if (newUids.length === 0) throw new HttpsError("invalid-argument", "Choose at least one other school member.");
 
   const conversationRef = db.doc(`conversations/${conversationId}`);
   const initial = await conversationRef.get();
   if (!initial.exists || initial.data().schoolId !== "ctla") throw new HttpsError("not-found", "Conversation not found.");
   const before = initial.data();
-  if (!before.memberUids?.includes(uid)) throw new HttpsError("permission-denied", "You must be a member of this conversation.");
-  if (before.kind === "announcement" && !["presidency", "admin"].includes(user.role)) {
+  const initialProfiles = Array.isArray(before.memberProfileIds) ? before.memberProfileIds : before.memberUids || [];
+  if (!initialProfiles.includes(identityId)) throw new HttpsError("permission-denied", "You must be a member of this conversation.");
+  newUids = newUids.filter((memberUid) => !initialProfiles.includes(memberUid));
+  if (newUids.length === 0) return { success: true, alreadyMembers: true };
+  const verifiedSchoolProfile = identityId === uid;
+  if (before.kind === "announcement" && (!verifiedSchoolProfile || !["presidency", "admin"].includes(user.role))) {
     throw new HttpsError("permission-denied", "Only authorized school staff can add people to class or announcement chats.");
   }
-  if (before.kind === "class" && !["presidency", "admin"].includes(user.role)) {
+  if (before.kind === "class" && (!verifiedSchoolProfile || !["presidency", "admin"].includes(user.role))) {
     const classSnapshot = before.classId ? await db.doc(`classes/${before.classId}`).get() : null;
     if (user.role !== "teacher" || !classSnapshot?.exists || classSnapshot.data().teacherUid !== uid) {
       throw new HttpsError("permission-denied", "Only the class teacher, Presidency, or Admin can add members to this class chat.");
@@ -347,13 +357,17 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
     const snapshot = await transaction.get(conversationRef);
     if (!snapshot.exists) throw new HttpsError("not-found", "Conversation not found.");
     const conversation = snapshot.data();
-    if (!conversation.memberUids?.includes(uid)) throw new HttpsError("permission-denied", "You are no longer a member of this conversation.");
-    const memberUids = [...new Set([...conversation.memberUids, ...newUids])];
-    if (memberUids.length > 100) throw new HttpsError("resource-exhausted", "This conversation has reached its 100-member limit.");
-    const memberNames = [...new Set([...(conversation.memberNames || []), ...newUids.map((memberUid) => directoryByUid.get(memberUid).displayName || "School member")])];
+    const currentProfiles = Array.isArray(conversation.memberProfileIds) ? conversation.memberProfileIds : conversation.memberUids || [];
+    if (!currentProfiles.includes(identityId)) throw new HttpsError("permission-denied", "You are no longer a member of this conversation.");
+    const additions = newUids.filter((memberUid) => !currentProfiles.includes(memberUid));
+    if (additions.length === 0) return;
+    const memberUids = [...new Set([...(conversation.memberUids || []), ...newUids])];
+    const memberProfileIds = [...currentProfiles, ...additions];
+    if (memberProfileIds.length > 100) throw new HttpsError("resource-exhausted", "This conversation has reached its 100-member limit.");
+    const memberNames = [...(conversation.memberNames || []), ...additions.map((memberUid) => directoryByUid.get(memberUid).displayName || "School member")];
     transaction.update(conversationRef, {
-      memberUids, memberNames, memberCount: memberUids.length,
-      kind: conversation.kind === "direct" && memberUids.length > 2 ? "group" : conversation.kind,
+      memberUids, memberProfileIds, memberNames, memberCount: memberProfileIds.length,
+      kind: conversation.kind === "direct" && memberProfileIds.length > 2 ? "group" : conversation.kind,
       updatedAt: FieldValue.serverTimestamp()
     });
   });

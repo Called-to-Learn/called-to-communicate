@@ -9,6 +9,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/users/$(uid);
     }
 
+    function profilePath(profileId) {
+      return /databases/$(database)/documents/profiles/$(profileId);
+    }
+
     function hasAccount() {
       return signedIn() && exists(userPath(request.auth.uid));
     }
@@ -23,8 +27,15 @@ service cloud.firestore {
         && account().schoolId == 'ctla';
     }
 
+    function ownProfileSelected() {
+      return activeUser()
+        && (!account().keys().hasAny(['activeMemberId'])
+          || !(account().activeMemberId is string)
+          || account().activeMemberId == request.auth.uid);
+    }
+
     function roleIs(role) {
-      return activeUser() && account().role == role;
+      return ownProfileSelected() && account().role == role;
     }
 
     function staff() {
@@ -53,40 +64,175 @@ service cloud.firestore {
 
     function familyMember(familyId) {
       let familyPath = /databases/$(database)/documents/families/$(familyId);
+      let memberPath = /databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid);
+      let linkPath = /databases/$(database)/documents/familyLinks/$(request.auth.uid);
       return activeUser()
         && exists(familyPath)
-        && request.auth.uid in get(familyPath).data.memberUids;
+        && (get(familyPath).data.ownerUid == request.auth.uid
+          || (exists(memberPath)
+            && get(memberPath).data.uid == request.auth.uid
+            && get(memberPath).data.status == 'active')
+          || (exists(linkPath)
+            && get(linkPath).data.familyId == familyId
+            && get(linkPath).data.status == 'active')
+          || (get(familyPath).data.memberUids is list
+            && request.auth.uid in get(familyPath).data.memberUids));
+    }
+
+    function familyManager(familyId) {
+      let familyPath = /databases/$(database)/documents/families/$(familyId);
+      return ownProfileSelected()
+        && exists(familyPath)
+        && get(familyPath).data.ownerUid == request.auth.uid;
+    }
+
+    function familyOwnerAfter(familyId) {
+      let familyPath = /databases/$(database)/documents/families/$(familyId);
+      return ownProfileSelected()
+        && existsAfter(familyPath)
+        && getAfter(familyPath).data.ownerUid == request.auth.uid;
+    }
+
+    function ownedProfile(profileId) {
+      return activeUser()
+        && exists(profilePath(profileId))
+        && get(profilePath(profileId)).data.ownerUid == request.auth.uid
+        && get(profilePath(profileId)).data.status == 'active'
+        && (get(profilePath(profileId)).data.accountType != 'managed'
+          || get(profilePath(profileId)).data.managerUid == request.auth.uid);
+    }
+
+    function canAccessProfile(profileId) {
+      return activeUser()
+        && ownedProfile(profileId);
+    }
+
+    function identityIdForUser() {
+      let requestedProfile = hasAccount() && account().keys().hasAny(['activeMemberId'])
+        ? account().activeMemberId : null;
+      let familyLinkPath = /databases/$(database)/documents/familyLinks/$(request.auth.uid);
+      return requestedProfile is string
+          && ownedProfile(requestedProfile)
+        ? requestedProfile
+        : (exists(familyLinkPath)
+          && get(familyLinkPath).data.status == 'active'
+          && get(familyLinkPath).data.memberId is string
+          ? get(familyLinkPath).data.memberId
+          : request.auth.uid);
+    }
+
+    function selectedManagedProfile(profileId) {
+      let path = profilePath(profileId);
+      return activeUser()
+        && identityIdForUser() == profileId
+        && exists(path)
+        && get(path).data.ownerUid == request.auth.uid
+        && get(path).data.managerUid == request.auth.uid
+        && get(path).data.accountType == 'managed'
+        && get(path).data.status == 'active';
+    }
+
+    function privateProfileReader(profileId) {
+      let path = profilePath(profileId);
+      return canAccessProfile(profileId)
+        && exists(path)
+        && (identityIdForUser() == profileId
+          || (get(path).data.familyId is string
+            && familyManager(get(path).data.familyId)));
+    }
+
+    function validFamilyRole(role) {
+      return role in ['parent', 'student', 'teacher', 'presidency'];
+    }
+
+    function validProfileSettings(settings) {
+      return settings is map
+        && settings.keys().hasOnly(['notificationPrefs'])
+        && (!settings.keys().hasAny(['notificationPrefs'])
+          || (settings.notificationPrefs is map
+            && settings.notificationPrefs.keys().hasOnly(['messages', 'announcements', 'events'])
+            && settings.notificationPrefs.messages is bool
+            && settings.notificationPrefs.announcements is bool
+            && settings.notificationPrefs.events is bool));
+    }
+
+    function inviteMatches(inviteCode, familyId) {
+      let invitePath = /databases/$(database)/documents/familyInvites/$(inviteCode);
+      return inviteCode is string
+        && exists(invitePath)
+        && get(invitePath).data.familyId == familyId
+        && get(invitePath).data.status == 'pending'
+        && get(invitePath).data.type == 'link'
+        && get(invitePath).data.email == request.auth.token.email.lower();
     }
 
     function conversationMember(conversationId) {
       let conversationPath = /databases/$(database)/documents/conversations/$(conversationId);
+      let conversation = get(conversationPath).data;
+      let identityId = identityIdForUser();
       return activeUser()
         && exists(conversationPath)
-        && request.auth.uid in get(conversationPath).data.memberUids;
+        && (conversation.memberProfileIds is list
+          ? (identityId in conversation.memberProfileIds && canAccessProfile(identityId))
+          : (identityId == request.auth.uid && request.auth.uid in conversation.memberUids));
     }
 
     function conversationManager(conversationId) {
       let conversationPath = /databases/$(database)/documents/conversations/$(conversationId);
       return activeUser()
         && exists(conversationPath)
-        && (get(conversationPath).data.createdBy == request.auth.uid || presidencyOrAdmin());
+        && (presidencyOrAdmin() || conversationCreator(conversationId));
     }
 
-    function conversationMemberUpdateAllowed(conversationId) {
+    function conversationCreator(conversationId) {
+      let conversationPath = /databases/$(database)/documents/conversations/$(conversationId);
+      let conversation = get(conversationPath).data;
+      let identityId = identityIdForUser();
+      return activeUser()
+        && exists(conversationPath)
+        && conversationMember(conversationId)
+        && ((conversation.createdByIdentityId is string
+            && conversation.createdByIdentityId == identityId
+            && canAccessProfile(identityId))
+          || (!(conversation.memberProfileIds is list)
+            && conversation.createdBy == request.auth.uid
+            && identityId == request.auth.uid));
+    }
+
+    function canSendAsProfile(profileId) {
+      return ownedProfile(profileId);
+    }
+
+    function identityDisplayName(profileId) {
+      return profileId == request.auth.uid
+        ? account().displayName
+        : get(profilePath(profileId)).data.displayName;
+    }
+
+    function conversationCanAddMembers() {
       let oldUids = resource.data.memberUids;
       let newUids = request.resource.data.memberUids;
       let oldNames = resource.data.memberNames;
       let newNames = request.resource.data.memberNames;
-      let changed = request.resource.data.diff(resource.data).affectedKeys();
-      let fieldsValid = changed.hasOnly(['memberUids', 'memberNames', 'memberCount', 'kind', 'updatedAt'])
+      let oldProfiles = resource.data.memberProfileIds is list ? resource.data.memberProfileIds : oldUids;
+      let newProfiles = request.resource.data.memberProfileIds is list ? request.resource.data.memberProfileIds : newUids;
+      let addedUids = newUids.removeAll(oldUids);
+      let addedProfiles = newProfiles.removeAll(oldProfiles);
+      return newProfiles.size() > oldProfiles.size()
         && newUids is list
+        && newProfiles is list
         && newNames is list
         && newUids.size() <= 100
+        && newProfiles.size() <= 100
         && newNames.size() <= 100
-        && request.resource.data.memberCount == newUids.size();
-      let canAdd = newUids.size() > oldUids.size()
+        && request.resource.data.memberCount == newProfiles.size()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'memberProfileIds', 'memberNames', 'memberCount', 'kind', 'updatedAt'])
         && newUids.hasAll(oldUids)
-        && newNames.size() == oldNames.size() + (newUids.size() - oldUids.size())
+        && newProfiles.hasAll(oldProfiles)
+        && addedProfiles.size() == addedUids.size()
+        && addedProfiles.hasAll(addedUids)
+        && addedUids.hasAll(addedProfiles)
+        && newNames.size() == oldNames.size() + (newProfiles.size() - oldProfiles.size())
         && newNames.hasAll(oldNames)
         && (resource.data.kind in ['direct', 'group']
           || (resource.data.kind == 'class'
@@ -95,21 +241,47 @@ service cloud.firestore {
               && get(/databases/$(database)/documents/classes/$(resource.data.classId)).data.teacherUid == request.auth.uid)))
           || (resource.data.kind == 'announcement' && presidencyOrAdmin()))
         && (request.resource.data.kind == resource.data.kind
-          || (resource.data.kind == 'direct' && request.resource.data.kind == 'group' && newUids.size() > 2));
-      let canLeave = newUids.size() == oldUids.size() - 1
+          || (resource.data.kind == 'direct' && request.resource.data.kind == 'group' && newProfiles.size() > 2));
+    }
+
+    function conversationCanLeave() {
+      let oldUids = resource.data.memberUids;
+      let newUids = request.resource.data.memberUids;
+      let oldNames = resource.data.memberNames;
+      let newNames = request.resource.data.memberNames;
+      let oldProfiles = resource.data.memberProfileIds is list ? resource.data.memberProfileIds : oldUids;
+      let newProfiles = request.resource.data.memberProfileIds is list ? request.resource.data.memberProfileIds : newUids;
+      return newProfiles.size() == oldProfiles.size() - 1
         && oldUids.hasAll(newUids)
-        && request.auth.uid in oldUids
-        && !(request.auth.uid in newUids)
-        && newUids.size() > 0
+        && oldProfiles.hasAll(newProfiles)
+        && identityIdForUser() in oldProfiles
+        && !(identityIdForUser() in newProfiles)
+        && newProfiles.size() > 0
         && newNames.size() >= oldNames.size() - 1
         && newNames.size() <= oldNames.size()
         && oldNames.hasAll(newNames)
         && request.resource.data.kind == resource.data.kind;
-      return conversationMember(conversationId)
+    }
+
+    function conversationMemberUpdateAllowed(conversationId) {
+      let oldUids = resource.data.memberUids;
+      let newUids = request.resource.data.memberUids;
+      let oldNames = resource.data.memberNames;
+      let newNames = request.resource.data.memberNames;
+      let oldProfiles = resource.data.memberProfileIds is list ? resource.data.memberProfileIds : oldUids;
+      let newProfiles = request.resource.data.memberProfileIds is list ? request.resource.data.memberProfileIds : newUids;
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let fieldsValid = changed.hasOnly(['memberUids', 'memberProfileIds', 'memberNames', 'memberCount', 'kind', 'updatedAt'])
         && oldUids is list
+        && newUids is list
+        && oldProfiles is list
+        && newProfiles is list
         && oldNames is list
+        && newNames is list
+        && request.resource.data.memberCount == newProfiles.size();
+      return conversationMember(conversationId)
         && fieldsValid
-        && (canAdd || canLeave);
+        && (conversationCanAddMembers() || conversationCanLeave());
     }
 
     match /users/{userId} {
@@ -135,6 +307,8 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'displayName', 'photoURL', 'activeMemberId', 'notificationPrefs', 'updatedAt'
             ])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['activeMemberId'])
+              || ownedProfile(request.resource.data.activeMemberId))
             && request.resource.data.role == resource.data.role
             && request.resource.data.status == resource.data.status
             && request.resource.data.schoolId == resource.data.schoolId
@@ -183,19 +357,159 @@ service cloud.firestore {
       allow delete: if presidencyOrAdmin();
     }
 
+    match /profiles/{profileId} {
+      allow read: if privateProfileReader(profileId);
+      allow create: if signedIn()
+        && request.auth.uid == profileId
+        && exists(userPath(profileId))
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.accountType == 'personal'
+        && request.resource.data.schoolId == 'ctla'
+        && request.resource.data.role == account().role
+        && request.resource.data.status == account().status;
+      allow create: if familyManager(request.resource.data.familyId)
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.managerUid == request.auth.uid
+        && request.resource.data.accountType == 'managed'
+        && request.resource.data.familyId is string
+        && request.resource.data.schoolId == 'ctla'
+        && validFamilyRole(request.resource.data.role)
+        && request.resource.data.status == 'active';
+      allow update: if (
+          canAccessProfile(profileId)
+          && identityIdForUser() == profileId
+          && request.auth.uid == resource.data.ownerUid
+          && resource.data.accountType != 'managed'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['familyId', 'displayName', 'settings', 'updatedAt'])
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.accountType == resource.data.accountType
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['displayName'])
+            || (request.resource.data.displayName is string && request.resource.data.displayName.size() > 0 && request.resource.data.displayName.size() <= 100))
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['settings'])
+            || validProfileSettings(request.resource.data.settings)))
+        || (activeUser()
+          && request.auth.uid != profileId
+          && resource.data.schoolId == 'ctla'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'status', 'updatedAt'])
+          && approvedRole(request.resource.data.role)
+          && request.resource.data.status == 'active'
+          && canApproveRole(request.resource.data.role)
+          && getAfter(userPath(resource.data.ownerUid)).data.role == request.resource.data.role
+          && getAfter(userPath(resource.data.ownerUid)).data.status == request.resource.data.status)
+        || (familyManager(resource.data.familyId)
+          && resource.data.accountType == 'managed'
+          && resource.data.ownerUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'role', 'grade', 'tribe', 'settings', 'updatedAt', 'status', 'familyId'])
+          && validFamilyRole(request.resource.data.role)
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.managerUid == resource.data.managerUid
+          && request.resource.data.accountType == resource.data.accountType
+          && request.resource.data.status in ['active', 'archived']
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['settings'])
+            || validProfileSettings(request.resource.data.settings))
+          && (request.resource.data.status != 'archived'
+            || getAfter(userPath(request.auth.uid)).data.activeMemberId != profileId)
+          && (request.resource.data.familyId == resource.data.familyId || request.resource.data.familyId == null))
+        || (selectedManagedProfile(profileId)
+          && resource.data.accountType == 'managed'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'role', 'grade', 'tribe', 'settings', 'updatedAt'])
+          && validFamilyRole(request.resource.data.role)
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.managerUid == resource.data.managerUid
+          && request.resource.data.accountType == resource.data.accountType
+          && request.resource.data.status == 'active'
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 100
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['settings'])
+            || validProfileSettings(request.resource.data.settings)))
+        || (familyManager(resource.data.familyId)
+          && resource.data.accountType != 'managed'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['familyId', 'updatedAt'])
+          && request.resource.data.familyId == null);
+      allow delete: if false;
+
+      match /calendarEvents/{eventId} {
+        allow read: if privateProfileReader(profileId);
+        allow create: if canAccessProfile(profileId)
+          && identityIdForUser() == profileId
+          && request.resource.data.identityId == profileId
+          && request.resource.data.ownerUid == request.auth.uid
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 120
+          && request.resource.data.date is string
+          && request.resource.data.kind in ['live', 'meeting', 'event', 'deadline'];
+        allow update, delete: if privateProfileReader(profileId)
+          && resource.data.ownerUid == request.auth.uid;
+      }
+    }
+
+    match /familyLinks/{userId} {
+      allow read: if activeUser()
+        && (request.auth.uid == userId || familyMember(resource.data.familyId));
+      allow create: if activeUser()
+        && request.auth.uid == userId
+        && request.resource.data.status == 'active'
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberId is string
+        && ((request.resource.data.accountType == 'owner'
+            && familyOwnerAfter(request.resource.data.familyId)
+            && request.resource.data.memberId == request.auth.uid)
+          || (request.resource.data.accountType == 'linked'
+            && request.resource.data.memberId == request.auth.uid
+            && inviteMatches(request.resource.data.inviteCode, request.resource.data.familyId)));
+      allow update: if activeUser()
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'updatedAt'])
+        && request.resource.data.familyId == resource.data.familyId
+        && request.resource.data.memberId == resource.data.memberId;
+      allow delete: if activeUser()
+        && (request.auth.uid == userId || familyManager(resource.data.familyId));
+    }
+
+    match /familyInvites/{inviteCode} {
+      allow read: if activeUser()
+        && (resource.data.ownerUid == request.auth.uid
+          || (request.auth.token.email is string && resource.data.email == request.auth.token.email.lower()));
+      allow create: if familyManager(request.resource.data.familyId)
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.email is string
+        && request.resource.data.name is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.type == 'link'
+        && validFamilyRole(request.resource.data.role);
+      allow update: if activeUser()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedBy', 'acceptedAt'])
+        && request.resource.data.status == 'accepted'
+        && request.resource.data.acceptedBy == request.auth.uid
+        && request.auth.token.email is string
+        && resource.data.email == request.auth.token.email.lower()
+        && existsAfter(/databases/$(database)/documents/familyLinks/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/familyLinks/$(request.auth.uid)).data.inviteCode == inviteCode;
+      allow delete: if familyManager(resource.data.familyId) && resource.data.status == 'pending';
+    }
+
     match /conversations/{conversationId} {
       allow read: if activeUser()
         && resource.data.schoolId == 'ctla'
-        && (request.auth.uid in resource.data.memberUids
-          || resource.data.createdBy == request.auth.uid
-          || presidencyOrAdmin());
+        && (conversationMember(conversationId) || conversationManager(conversationId));
 
       allow create: if activeUser()
         && request.resource.data.schoolId == 'ctla'
         && request.resource.data.createdBy == request.auth.uid
         && request.auth.uid in request.resource.data.memberUids
         && request.resource.data.memberUids is list
+        && request.resource.data.memberProfileIds is list
+        && request.resource.data.createdByIdentityId is string
+        && request.resource.data.createdByIdentityId == identityIdForUser()
+        && request.resource.data.createdByIdentityId in request.resource.data.memberProfileIds
+        && canSendAsProfile(request.resource.data.createdByIdentityId)
         && request.resource.data.memberUids.size() <= 100
+        && request.resource.data.memberProfileIds.size() <= 100
         && request.resource.data.title is string
         && request.resource.data.title.size() > 0
         && request.resource.data.title.size() <= 100
@@ -209,11 +523,13 @@ service cloud.firestore {
           ||
           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'updatedAt'])
             && request.resource.data.lastMessage.senderName is string
+            && request.resource.data.lastMessage.senderUid == request.auth.uid
+            && request.resource.data.lastMessage.senderProfileId == identityIdForUser()
             && request.resource.data.lastMessage.senderName.size() <= 100
             && request.resource.data.lastMessage.text is string
             && request.resource.data.lastMessage.text.size() <= 5000)
           || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'description', 'updatedAt'])
-            && (resource.data.createdBy == request.auth.uid || staff())
+            && (conversationCreator(conversationId) || staff())
             && request.resource.data.title is string
             && request.resource.data.title.size() > 0
             && request.resource.data.title.size() <= 100
@@ -221,18 +537,20 @@ service cloud.firestore {
             && request.resource.data.description.size() <= 100)
         );
 
-      allow delete: if presidencyOrAdmin()
-        || (activeUser() && resource.data.createdBy == request.auth.uid);
+      allow delete: if conversationManager(conversationId);
 
       match /messages/{messageId} {
         allow read: if conversationMember(conversationId) || conversationManager(conversationId);
         allow create: if conversationMember(conversationId)
           && request.resource.data.keys().hasOnly([
-            'senderUid', 'senderName', 'senderInitials', 'text', 'createdAt', 'schoolId',
+            'senderUid', 'senderProfileId', 'senderName', 'senderInitials', 'text', 'createdAt', 'schoolId',
             'attachmentName', 'attachmentSize', 'attachmentType', 'attachmentUrl', 'attachmentPath', 'time', 'mine'
           ])
           && request.resource.data.senderUid == request.auth.uid
-          && request.resource.data.senderName == account().displayName
+          && request.resource.data.senderProfileId is string
+          && request.resource.data.senderProfileId == identityIdForUser()
+          && canSendAsProfile(request.resource.data.senderProfileId)
+          && request.resource.data.senderName == identityDisplayName(request.resource.data.senderProfileId)
           && request.resource.data.schoolId == 'ctla'
           && request.resource.data.text is string
           && request.resource.data.text.size() <= 5000
@@ -260,7 +578,9 @@ service cloud.firestore {
 
       match /joinRequests/{userId} {
         allow create, update, delete: if false;
-        allow read: if (activeUser() && request.auth.uid == userId)
+        allow read: if (activeUser() && (request.auth.uid == userId
+            || (resource.data.uid == request.auth.uid
+              && resource.data.identityId == identityIdForUser())))
           || (roleIs('teacher') && get(/databases/$(database)/documents/classes/$(classId)).data.teacherUid == request.auth.uid)
           || presidencyOrAdmin();
       }
@@ -287,19 +607,95 @@ service cloud.firestore {
 
     match /families/{familyId} {
       allow read: if familyMember(familyId);
-      // Family roots and Auth-linked member accounts are created by trusted callable functions.
-      allow create: if false;
-      allow update: if familyMember(familyId)
-        && resource.data.ownerUid == request.auth.uid
+      allow create: if activeUser()
+        && ownProfileSelected()
+        && account().role in ['parent', 'admin']
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.schoolId == 'ctla'
+        && request.resource.data.memberIds is list
+        && request.resource.data.memberIds.hasOnly([request.auth.uid])
+        && request.resource.data.memberCount == 1;
+      allow update: if familyManager(familyId)
         && request.resource.data.ownerUid == resource.data.ownerUid
         && request.resource.data.schoolId == resource.data.schoolId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'tribe', 'updatedAt']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'tribe', 'memberIds', 'memberCount', 'updatedAt'])
+        && request.resource.data.memberIds is list
+        && request.resource.data.memberIds.size() <= 20
+        && request.resource.data.memberCount == request.resource.data.memberIds.size();
       allow delete: if presidencyOrAdmin();
 
       match /members/{memberId} {
-        allow read: if familyMember(familyId);
-        // Member Auth accounts and membership lists are provisioned by the trusted callable function.
-        allow create, update, delete: if false;
+        allow get: if familyManager(familyId)
+          || (activeUser()
+            && memberId == request.auth.uid
+            && resource.data.accountType == 'linked'
+            && resource.data.linkedUid == request.auth.uid
+            && resource.data.status == 'active')
+          || selectedManagedProfile(memberId);
+        allow list: if familyManager(familyId);
+        allow create: if (familyOwnerAfter(familyId)
+            && request.resource.data.familyId == familyId
+            && request.resource.data.memberId == memberId
+            && request.resource.data.status == 'active'
+            && ((request.resource.data.accountType == 'owner'
+                && memberId == request.auth.uid
+                && request.resource.data.uid == request.auth.uid
+                && request.resource.data.ownerUid == request.auth.uid)
+              || (familyManager(familyId)
+                && request.resource.data.accountType == 'managed'
+                && request.resource.data.uid == request.auth.uid
+                && request.resource.data.ownerUid == request.auth.uid
+                && validFamilyRole(request.resource.data.role)))
+          || (activeUser()
+            && request.resource.data.accountType == 'linked'
+            && memberId == request.auth.uid
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.ownerUid == request.auth.uid
+            && request.resource.data.linkedUid == request.auth.uid
+            && request.resource.data.familyId == familyId
+            && request.resource.data.status == 'active'
+            && inviteMatches(request.resource.data.inviteCode, familyId)));
+        allow update: if (familyManager(familyId)
+          && resource.data.status == 'active'
+          && request.resource.data.familyId == resource.data.familyId
+          && request.resource.data.memberId == resource.data.memberId
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.accountType == resource.data.accountType
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'role', 'grade', 'tribe', 'updatedAt'])
+          && (resource.data.accountType == 'managed'
+            ? validFamilyRole(request.resource.data.role)
+            : request.resource.data.role == resource.data.role))
+          ;
+        allow update: if selectedManagedProfile(memberId)
+          && resource.data.accountType == 'managed'
+          && resource.data.ownerUid == request.auth.uid
+          && resource.data.status == 'active'
+          && request.resource.data.familyId == resource.data.familyId
+          && request.resource.data.memberId == resource.data.memberId
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.accountType == resource.data.accountType
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'role', 'grade', 'tribe', 'updatedAt'])
+          && validFamilyRole(request.resource.data.role)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 100;
+        // Older app versions stored preferences on the roster row. Let the family owner
+        // remove that legacy private field once; new preferences live on /profiles.
+        allow update: if familyManager(familyId)
+          && resource.data.keys().hasAny(['settings'])
+          && !request.resource.data.keys().hasAny(['settings'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['settings']);
+        allow update: if activeUser()
+          && resource.data.accountType == 'linked'
+          && resource.data.linkedUid is string
+          && canApproveRole(request.resource.data.role)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'updatedAt'])
+          && getAfter(userPath(resource.data.linkedUid)).data.role == request.resource.data.role
+          && getAfter(profilePath(memberId)).data.role == request.resource.data.role;
+        allow delete: if (familyManager(familyId) && memberId != resource.data.ownerUid)
+          || (activeUser() && resource.data.accountType == 'linked' && resource.data.linkedUid == request.auth.uid && resource.data.ownerUid == request.auth.uid);
       }
     }
 

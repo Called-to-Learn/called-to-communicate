@@ -2,22 +2,39 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function signedIn() { return request.auth != null; }
+    function userRecord() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
     function activeUser() {
       return signedIn()
         && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.status == 'active'
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.schoolId == 'ctla';
+        && userRecord().status == 'active'
+        && userRecord().schoolId == 'ctla';
+    }
+    function activeIdentityId() {
+      let profileId = userRecord().activeMemberId;
+      return profileId is string ? profileId : request.auth.uid;
     }
     function conversationMember(conversationId) {
+      let conversation = firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data;
+      let profileId = activeIdentityId();
       return activeUser()
         && firestore.exists(/databases/(default)/documents/conversations/$(conversationId))
-        && request.auth.uid in firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.memberUids;
+        && (conversation.memberProfileIds is list
+          ? (profileId in conversation.memberProfileIds
+            && profileId is string)
+          : (profileId == request.auth.uid && request.auth.uid in conversation.memberUids));
     }
     function conversationManager(conversationId) {
       return activeUser()
         && firestore.exists(/databases/(default)/documents/conversations/$(conversationId))
-        && (firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.createdBy == request.auth.uid
-          || firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['presidency', 'admin']);
+        && ((firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.createdByIdentityId is string
+            && firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.createdByIdentityId == activeIdentityId()
+            && conversationMember(conversationId))
+          || (!(firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.memberProfileIds is list)
+            && firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.createdBy == request.auth.uid
+            && activeIdentityId() == request.auth.uid)
+          || (activeIdentityId() == request.auth.uid && userRecord().role in ['presidency', 'admin']));
     }
 
     match /conversations/{conversationId}/{uid}/{fileName} {
