@@ -52,8 +52,9 @@ exports.createClass = onCall({ region: "us-central1", maxInstances: 10 }, async 
   const user = await requireActiveSchoolUser(uid);
   const identityId = String(request.data?.identityId || uid);
   const { profile: identityProfile } = await getActiveIdentityProfile(uid, identityId, user);
-  if (identityId !== uid || !new Set(["teacher", "presidency", "admin"]).has(user.role)) {
-    throw new HttpsError("permission-denied", "Only verified staff using their own school profile can create classes.");
+  const role = String(identityProfile.role || (identityId === uid ? user.role : "student")).toLowerCase();
+  if (!new Set(["teacher", "presidency"]).has(role) && !(identityId === uid && role === "admin")) {
+    throw new HttpsError("permission-denied", "Only an approved teacher, Presidency, or Admin can create a class.");
   }
   const name = String(request.data?.name || request.data?.title || "").trim();
   const teacher = String(request.data?.teacher || user.displayName || "Teacher").trim();
@@ -71,13 +72,13 @@ exports.createClass = onCall({ region: "us-central1", maxInstances: 10 }, async 
   const now = FieldValue.serverTimestamp();
   const batch = db.batch();
   batch.set(classRef, {
-    name, title: name, teacher, teacherUid: uid, description, openEnrollment,
+    name, title: name, teacher, teacherUid: uid, teacherProfileId: identityId, description, openEnrollment,
     memberUids: [uid], memberProfileIds: [identityId], memberCount: 1, members: 1, color: "purple", icon: "cap",
     schoolId: "ctla", chatId: conversationRef.id, createdAt: now, updatedAt: now
   });
   batch.set(conversationRef, {
     title: name, kind: "class", classId: classRef.id, schoolId: "ctla",
-    createdBy: uid, createdByIdentityId: identityId, createdByRole: user.role, memberUids: [uid], memberProfileIds: [identityId], memberNames,
+    createdBy: uid, createdByIdentityId: identityId, createdByRole: role, memberUids: [uid], memberProfileIds: [identityId], memberNames,
     members: memberNames, memberCount: 1, color: "purple", preview: "Class chat is ready",
     createdAt: now, updatedAt: now
   });
@@ -134,7 +135,7 @@ exports.respondToClassJoin = onCall({ region: "us-central1", maxInstances: 10 },
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before reviewing class requests.");
   const callerUid = request.auth.uid;
   const caller = await requireActiveSchoolUser(callerUid);
-  const { identityId: callerIdentityId } = await getActiveIdentityProfile(callerUid, request.data?.identityId, caller);
+  const { identityId: callerIdentityId, profile: callerProfile } = await getActiveIdentityProfile(callerUid, request.data?.identityId, caller);
   const classId = String(request.data?.classId || "");
   const userId = String(request.data?.userId || "");
   const approve = request.data?.approve === true;
@@ -143,7 +144,11 @@ exports.respondToClassJoin = onCall({ region: "us-central1", maxInstances: 10 },
   const requestRef = classRef.collection("joinRequests").doc(userId);
   const initialClass = await classRef.get();
   if (!initialClass.exists || initialClass.data().schoolId !== "ctla") throw new HttpsError("not-found", "Class not found.");
-  if (callerIdentityId !== callerUid || (caller.role !== "presidency" && caller.role !== "admin" && (caller.role !== "teacher" || initialClass.data().teacherUid !== callerUid))) {
+  const callerRole = String(callerProfile.role || (callerIdentityId === callerUid ? caller.role : "student")).toLowerCase();
+  const classData = initialClass.data();
+  const classTeacherId = classData.teacherProfileId || classData.teacherUid;
+  const isAdmin = callerIdentityId === callerUid && callerRole === "admin";
+  if (callerRole !== "presidency" && !isAdmin && (callerRole !== "teacher" || classTeacherId !== callerIdentityId)) {
     throw new HttpsError("permission-denied", "Only the class teacher, Presidency, or Admin can review enrollment.");
   }
   const pendingSnapshot = await requestRef.get();
@@ -292,7 +297,7 @@ exports.deleteConversation = onCall({ region: "us-central1", maxInstances: 10 },
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before deleting a conversation.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
-  const { identityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
+  const { identityId, profile: identityProfile } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   const conversationId = String(request.data?.conversationId || "");
   if (!conversationId || conversationId.includes("/")) throw new HttpsError("invalid-argument", "Conversation ID is required.");
   const conversationRef = db.doc(`conversations/${conversationId}`);
@@ -302,7 +307,8 @@ exports.deleteConversation = onCall({ region: "us-central1", maxInstances: 10 },
   const isCreator = Array.isArray(conversation.memberProfileIds)
     ? conversation.createdByIdentityId === identityId && conversation.memberProfileIds.includes(identityId)
     : conversation.createdBy === uid && identityId === uid;
-  const isSchoolAdmin = identityId === uid && ["presidency", "admin"].includes(user.role);
+  const role = String(identityProfile.role || (identityId === uid ? user.role : "student")).toLowerCase();
+  const isSchoolAdmin = role === "presidency" || (identityId === uid && role === "admin");
   if (conversation.schoolId !== "ctla" || (!isCreator && !isSchoolAdmin)) {
     throw new HttpsError("permission-denied", "Only the conversation creator, Presidency, or Admin can delete this conversation.");
   }
@@ -317,7 +323,7 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before adding members.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
-  const { identityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
+  const { identityId, profile: identityProfile } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   const conversationId = String(request.data?.conversationId || "");
   const requested = request.data?.memberUids;
   if (!conversationId || conversationId.includes("/") || !Array.isArray(requested) || requested.length < 1 || requested.length > 50) {
@@ -334,13 +340,16 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
   if (!initialProfiles.includes(identityId)) throw new HttpsError("permission-denied", "You must be a member of this conversation.");
   newUids = newUids.filter((memberUid) => !initialProfiles.includes(memberUid));
   if (newUids.length === 0) return { success: true, alreadyMembers: true };
-  const verifiedSchoolProfile = identityId === uid;
-  if (before.kind === "announcement" && (!verifiedSchoolProfile || !["presidency", "admin"].includes(user.role))) {
+  const role = String(identityProfile.role || (identityId === uid ? user.role : "student")).toLowerCase();
+  const isSchoolAdmin = role === "presidency" || (identityId === uid && role === "admin");
+  if (before.kind === "announcement" && !isSchoolAdmin) {
     throw new HttpsError("permission-denied", "Only authorized school staff can add people to class or announcement chats.");
   }
-  if (before.kind === "class" && (!verifiedSchoolProfile || !["presidency", "admin"].includes(user.role))) {
+  if (before.kind === "class" && !isSchoolAdmin) {
     const classSnapshot = before.classId ? await db.doc(`classes/${before.classId}`).get() : null;
-    if (user.role !== "teacher" || !classSnapshot?.exists || classSnapshot.data().teacherUid !== uid) {
+    const classData = classSnapshot?.exists ? classSnapshot.data() : null;
+    const classTeacherId = classData?.teacherProfileId || classData?.teacherUid;
+    if (role !== "teacher" || classTeacherId !== identityId) {
       throw new HttpsError("permission-denied", "Only the class teacher, Presidency, or Admin can add members to this class chat.");
     }
   }

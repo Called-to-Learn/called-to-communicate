@@ -27,39 +27,24 @@ service cloud.firestore {
         && account().schoolId == 'ctla';
     }
 
+    function selectedManagedProfile(profileId) {
+      let path = profilePath(profileId);
+      return activeUser()
+        && account().keys().hasAny(['activeMemberId'])
+        && account().activeMemberId == profileId
+        && exists(path)
+        && get(path).data.ownerUid == request.auth.uid
+        && get(path).data.managerUid == request.auth.uid
+        && get(path).data.accountType == 'managed'
+        && get(path).data.status == 'active';
+    }
+
     function ownProfileSelected() {
       return activeUser()
         && (!account().keys().hasAny(['activeMemberId'])
           || !(account().activeMemberId is string)
-          || account().activeMemberId == request.auth.uid);
-    }
-
-    function roleIs(role) {
-      return ownProfileSelected() && account().role == role;
-    }
-
-    function staff() {
-      return roleIs('teacher') || presidencyOrAdmin();
-    }
-
-    function presidency() {
-      return roleIs('presidency');
-    }
-
-    function admin() {
-      return roleIs('admin');
-    }
-
-    function presidencyOrAdmin() {
-      return presidency() || admin();
-    }
-
-    function approvedRole(role) {
-      return role in ['parent', 'student', 'teacher', 'presidency', 'admin'];
-    }
-
-    function canApproveRole(role) {
-      return admin() || (presidency() && role != 'admin');
+          || account().activeMemberId == request.auth.uid
+          || selectedManagedProfile(account().activeMemberId));
     }
 
     function familyMember(familyId) {
@@ -121,22 +106,54 @@ service cloud.firestore {
           : request.auth.uid);
     }
 
-    function selectedManagedProfile(profileId) {
-      let path = profilePath(profileId);
-      return activeUser()
-        && identityIdForUser() == profileId
-        && exists(path)
-        && get(path).data.ownerUid == request.auth.uid
-        && get(path).data.managerUid == request.auth.uid
-        && get(path).data.accountType == 'managed'
-        && get(path).data.status == 'active';
+    function roleIs(role) {
+      let identityId = identityIdForUser();
+      return ownProfileSelected()
+        && (identityId == request.auth.uid
+          ? account().role == role
+          : (role in ['parent', 'student', 'teacher', 'presidency']
+            && selectedManagedProfile(identityId)
+            && get(profilePath(identityId)).data.role == role));
+    }
+
+    function staff() {
+      return roleIs('teacher') || presidencyOrAdmin();
+    }
+
+    function presidency() {
+      return roleIs('presidency');
+    }
+
+    function admin() {
+      return roleIs('admin');
+    }
+
+    function presidencyOrAdmin() {
+      return presidency() || admin();
+    }
+
+    function approvedRole(role) {
+      return role in ['parent', 'student', 'teacher', 'presidency', 'admin'];
+    }
+
+    function canApproveRole(role) {
+      return admin() || (presidency() && role != 'admin');
+    }
+
+    function classTeacher(classId) {
+      let path = /databases/$(database)/documents/classes/$(classId);
+      return exists(path)
+        && (get(path).data.teacherProfileId is string
+          ? get(path).data.teacherProfileId == identityIdForUser()
+          : get(path).data.teacherUid == request.auth.uid);
     }
 
     function privateProfileReader(profileId) {
       let path = profilePath(profileId);
       return canAccessProfile(profileId)
         && exists(path)
-        && (identityIdForUser() == profileId
+        && (profileId == request.auth.uid
+          || identityIdForUser() == profileId
           || (get(path).data.familyId is string
             && familyManager(get(path).data.familyId)));
     }
@@ -238,7 +255,7 @@ service cloud.firestore {
           || (resource.data.kind == 'class'
             && (presidencyOrAdmin() || (roleIs('teacher')
               && resource.data.classId is string
-              && get(/databases/$(database)/documents/classes/$(resource.data.classId)).data.teacherUid == request.auth.uid)))
+              && classTeacher(resource.data.classId)))
           || (resource.data.kind == 'announcement' && presidencyOrAdmin()))
         && (request.resource.data.kind == resource.data.kind
           || (resource.data.kind == 'direct' && request.resource.data.kind == 'group' && newProfiles.size() > 2));
@@ -568,20 +585,20 @@ service cloud.firestore {
       allow read: if activeUser() && resource.data.schoolId == 'ctla';
       // Class records and enrollment membership are written by trusted callables.
       allow create: if false;
-      allow update: if (presidencyOrAdmin() || (roleIs('teacher') && resource.data.teacherUid == request.auth.uid))
+      allow update: if (presidencyOrAdmin() || (roleIs('teacher') && classTeacher(classId)))
         && resource.data.schoolId == 'ctla'
         && request.resource.data.schoolId == resource.data.schoolId
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'name', 'title', 'teacher', 'description', 'openEnrollment', 'color', 'memberCount', 'members', 'updatedAt'
         ]);
-      allow delete: if presidencyOrAdmin() || (roleIs('teacher') && resource.data.teacherUid == request.auth.uid);
+      allow delete: if presidencyOrAdmin() || (roleIs('teacher') && classTeacher(classId));
 
       match /joinRequests/{userId} {
         allow create, update, delete: if false;
         allow read: if (activeUser() && (request.auth.uid == userId
             || (resource.data.uid == request.auth.uid
               && resource.data.identityId == identityIdForUser())))
-          || (roleIs('teacher') && get(/databases/$(database)/documents/classes/$(classId)).data.teacherUid == request.auth.uid)
+          || (roleIs('teacher') && classTeacher(classId))
           || presidencyOrAdmin();
       }
     }

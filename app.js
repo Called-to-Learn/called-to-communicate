@@ -106,6 +106,11 @@ let state = loadState();
 let backend = null;
 let authUser = null;
 let userProfile = null;
+let authInitialized = false;
+let authAccountReady = false;
+let authSessionRevision = 0;
+let authLoadForUid = null;
+let dataScopeRevision = 0;
 let familyLink = null;
 let activeFamilyId = null;
 let promptAccountPickerAfterFamilyLoad = false;
@@ -124,6 +129,7 @@ let joinRequestsUnsubscribe = null;
 let toastTimer = 0;
 let pendingFileKind = "any";
 let pendingAuthUser = null;
+let authObserverReceived = false;
 let isBusy = false;
 
 const persist = () => {
@@ -144,11 +150,17 @@ const activeIdentityId = () => state.activeMemberId || authUser?.uid || "demo";
 const currentRole = () => remoteMode
   ? (activeIdentityId() === authUser?.uid ? titleRole(userProfile?.role) : titleRole(activeFamilyMember()?.role || "student"))
   : state.currentUser.role;
-const verifiedRole = () => remoteMode && activeIdentityId() !== authUser?.uid ? "Student" : currentRole();
+const verifiedRole = () => {
+  const role = currentRole();
+  // Admin is a school-account role and cannot be inherited by a managed profile.
+  return remoteMode && activeIdentityId() !== authUser?.uid && role === "Admin" ? "Student" : role;
+};
 const canManageSchool = () => ["Teacher", "Presidency", "Admin"].includes(verifiedRole());
 const canAdmin = () => ["Presidency", "Admin"].includes(verifiedRole());
 const isAdmin = () => verifiedRole() === "Admin";
-const isSignedIn = () => remoteMode ? Boolean(authUser && userProfile?.status === "active") : state.isDemoSignedIn;
+const isSignedIn = () => remoteMode
+  ? Boolean(authUser && authAccountReady && userProfile?.id === authUser.uid && userProfile?.status === "active")
+  : state.isDemoSignedIn;
 
 function brand(extra = "") {
   return `<div class="brand ${extra}" aria-label="Called to Communicate, Called to Learn Academy">
@@ -199,7 +211,8 @@ function showToast(message) {
 function showFirebaseError(source, error) {
   console.error(`[Firebase] ${source}`, error);
   const code = String(error?.code || "").replace(/^firestore\//, "");
-  const detail = code || error?.message || "Unknown error";
+  const message = String(error?.message || "").trim();
+  const detail = code ? `${code}${message && !message.includes(code) ? `: ${message}` : ""}` : message || "Unknown error";
   showToast(`${source}: ${detail}`);
 }
 function showListenerError(source, error) { showFirebaseError(`${source} read`, error); }
@@ -229,8 +242,12 @@ function render() {
   const app = $("#app");
   if (!app) return;
   document.body.classList.toggle("chat-open", state.page === "chat");
+  if (!authInitialized) {
+    app.innerHTML = `<main class="auth-screen"><section class="auth-card card">${brand("auth-brand")}<div class="auth-copy"><h1>Loading your account</h1><p>Checking your secure school sign-in…</p></div></section></main>`;
+    return;
+  }
   if (!isSignedIn()) {
-    app.innerHTML = remoteMode && authUser && userProfile?.status !== "active" ? renderVerification() : renderAuth();
+    app.innerHTML = remoteMode && authUser ? renderVerification() : renderAuth();
     return;
   }
   let page = "";
@@ -272,7 +289,8 @@ function renderAuth() {
 
 function renderVerification() {
   const pending = userProfile?.status === "pending";
-  return `<main class="verify-state"><section class="card verify-card"><div class="item-icon" style="margin:0 auto 14px;width:56px;height:56px">${icon(pending ? "clock" : "shield")}</div><h1>${pending ? "Account awaiting verification" : "School access required"}</h1><p class="page-subtitle">${pending ? "Your account has been created. Called to Learn Academy staff must verify your role before school information becomes available." : "This account is not currently approved for Called to Learn Academy."}</p><button class="button ghost mt-12" data-action="sign-out">Sign out</button></section></main>`;
+  const failed = Boolean(state.error && !authAccountReady);
+  return `<main class="verify-state"><section class="card verify-card"><div class="item-icon" style="margin:0 auto 14px;width:56px;height:56px">${icon(failed ? "shield" : pending ? "clock" : "shield")}</div><h1>${failed ? "Couldn’t load this account" : pending ? "Account awaiting verification" : "School access required"}</h1><p class="page-subtitle">${failed ? esc(state.error) : pending ? "Your account has been created. Called to Learn Academy staff must verify your role before school information becomes available." : "This account is not currently approved for Called to Learn Academy."}</p>${failed ? `<button class="button primary mt-12" data-action="retry-account-load">Try again</button>` : ""}<button class="button ghost mt-12" data-action="sign-out">Sign out</button></section></main>`;
 }
 
 function renderHome() {
@@ -557,18 +575,22 @@ function openChat(id) {
   state.activeConversationId = id;
   state.page = "chat";
   state.search = "";
+  const sessionRevision = authSessionRevision;
+  const uid = authUser?.uid;
+  const identityId = activeIdentityId();
   const conversation = state.conversations.find((item) => item.id === id);
   if (conversation) conversation.unread = 0;
   if (messageUnsubscribe) messageUnsubscribe();
   if (backend?.enabled && authUser) {
     messageUnsubscribe = backend.subscribeMessages(id, (messages) => {
+      if (sessionRevision !== authSessionRevision || authUser?.uid !== uid || activeIdentityId() !== identityId) return;
       state.messages[id] = messages.map((message) => ({
-        ...message, sender: message.senderName, mine: (message.senderProfileId || message.senderUid) === activeIdentityId(),
+        ...message, sender: message.senderName, mine: (message.senderProfileId || message.senderUid) === identityId,
         time: timeLabel(timestampToDate(message.createdAt)), senderInitials: (message.senderName || "CT").split(/\s+/).map((part) => part[0]).slice(0, 2).join("")
       }));
       persist();
       if (state.page === "chat" && state.activeConversationId === id) render();
-    }, (error) => showListenerError("Messages", error));
+    }, (error) => { if (sessionRevision === authSessionRevision && authUser?.uid === uid && activeIdentityId() === identityId) showListenerError("Messages", error); });
   }
   persist(); render();
 }
@@ -577,22 +599,31 @@ function stopListeners() {
   [messageUnsubscribe, conversationUnsubscribe, classesUnsubscribe, eventsUnsubscribe, identityProfileUnsubscribe, directoryUnsubscribe, familyUnsubscribe, familyMembersUnsubscribe, pendingUsersUnsubscribe, joinRequestsUnsubscribe].forEach((unsubscribe) => unsubscribe?.());
   messageUnsubscribe = conversationUnsubscribe = classesUnsubscribe = eventsUnsubscribe = identityProfileUnsubscribe = directoryUnsubscribe = familyUnsubscribe = familyMembersUnsubscribe = pendingUsersUnsubscribe = joinRequestsUnsubscribe = null;
 }
-function connectDataListeners() {
+function connectDataListeners(sessionRevision = authSessionRevision) {
   if (!backend?.enabled || !authUser) return;
+  const uid = authUser.uid;
+  const identityId = activeIdentityId();
+  const scopeRevision = ++dataScopeRevision;
+  const isCurrentScope = () => sessionRevision === authSessionRevision
+    && scopeRevision === dataScopeRevision
+    && authUser?.uid === uid
+    && activeIdentityId() === identityId;
   stopListeners();
   state.conversations = [];
   state.messages = {};
   state.activeConversationId = null;
   state.classes = [];
   state.events = [];
-  identityProfileUnsubscribe = backend.subscribeIdentityProfile(activeIdentityId(), (profile) => {
+  identityProfileUnsubscribe = backend.subscribeIdentityProfile(identityId, (profile) => {
+    if (!isCurrentScope()) return;
     if (!profile) return;
     const memberPrefs = profile.settings?.notificationPrefs || {};
-    const accountPrefs = activeIdentityId() === authUser.uid ? userProfile?.notificationPrefs || {} : {};
+    const accountPrefs = identityId === uid ? userProfile?.notificationPrefs || {} : {};
     state.notificationPrefs = { messages: true, announcements: true, events: true, ...accountPrefs, ...memberPrefs };
     if (state.page === "settings-detail" && state.settingsDetail === "notifications") render();
-  }, (error) => showListenerError("Profile settings", error));
-  conversationUnsubscribe = backend.subscribeConversations(authUser.uid, activeIdentityId(), (items) => {
+  }, (error) => { if (isCurrentScope()) showListenerError("Profile settings", error); });
+  conversationUnsubscribe = backend.subscribeConversations(uid, identityId, (items) => {
+    if (!isCurrentScope()) return;
     state.conversations = items.map((item) => ({
       ...item,
       title: item.title || item.memberNames?.filter((name) => name !== state.currentUser.name).join(", ") || "Conversation",
@@ -601,29 +632,34 @@ function connectDataListeners() {
       color: item.color || "purple", members: item.memberNames || []
     }));
     persist(); if (state.page !== "chat") render();
-  }, (error) => showListenerError("Conversation list", error));
+  }, (error) => { if (isCurrentScope()) showListenerError("Conversation list", error); });
   classesUnsubscribe = backend.subscribeClasses(SCHOOL_ID, (items) => {
-    state.classes = items.map((item) => ({ ...item, joined: Array.isArray(item.memberProfileIds) ? item.memberProfileIds.includes(activeIdentityId()) : item.memberUids?.includes(authUser.uid) || false, color: item.color || "purple", note: item.description || "Class updates and resources" }));
+    if (!isCurrentScope()) return;
+    state.classes = items.map((item) => ({ ...item, joined: Array.isArray(item.memberProfileIds) ? item.memberProfileIds.includes(identityId) : item.memberUids?.includes(uid) || false, color: item.color || "purple", note: item.description || "Class updates and resources" }));
     persist(); if (state.activeTab === "classes" || state.page === "class-detail") render();
-  }, (error) => showListenerError("Classes", error));
-  eventsUnsubscribe = backend.subscribeEvents(SCHOOL_ID, activeIdentityId(), (items) => {
+  }, (error) => { if (isCurrentScope()) showListenerError("Classes", error); });
+  eventsUnsubscribe = backend.subscribeEvents(SCHOOL_ID, identityId, (items) => {
+    if (!isCurrentScope()) return;
     state.events = items.map((item) => ({ ...item, date: item.date, time: item.time, color: item.color || "purple" }));
     persist(); if (state.activeTab === "calendar") render();
-  }, (error) => showListenerError("Calendar", error));
+  }, (error) => { if (isCurrentScope()) showListenerError("Calendar", error); });
   directoryUnsubscribe = backend.subscribeDirectory(SCHOOL_ID, (items) => {
+    if (!isCurrentScope()) return;
     directory = items;
     if (state.page === "new-message" || (state.page === "settings-detail" && state.settingsDetail === "admin")) render();
-  }, (error) => showListenerError("School directory", error));
+  }, (error) => { if (isCurrentScope()) showListenerError("School directory", error); });
   if (activeFamilyId) {
     familyUnsubscribe = backend.subscribeFamily(activeFamilyId, (family) => {
+      if (!isCurrentScope()) return;
       if (family) {
         state.family = { ...state.family, name: family.name || "Family Account", tribe: family.tribe || "Lamanites" };
         persist(); if (state.page === "family" || state.page === "account") render();
       }
-    }, (error) => showListenerError("Family account", error));
-    const canListFamilyMembers = familyLink?.accountType === "owner" && activeIdentityId() === authUser.uid;
+    }, (error) => { if (isCurrentScope()) showListenerError("Family account", error); });
+    const canListFamilyMembers = familyLink?.accountType === "owner" && identityId === uid;
     if (familyLink?.accountType === "linked" || canListFamilyMembers) {
-      familyMembersUnsubscribe = backend.subscribeFamilyMembers(activeFamilyId, authUser.uid, canListFamilyMembers, (members) => {
+      familyMembersUnsubscribe = backend.subscribeFamilyMembers(activeFamilyId, uid, canListFamilyMembers, (members) => {
+      if (!isCurrentScope()) return;
       if (canListFamilyMembers) {
         members.filter((member) => member.settings && Object.keys(member.settings).length)
           .forEach((member) => backend.clearLegacyMemberSettings(activeFamilyId, member.memberId || member.id).catch(() => {}));
@@ -645,51 +681,105 @@ function connectDataListeners() {
         if (familyLink?.accountType === "owner" && state.family.members.filter(canSelectFamilyMember).length > 1) state.page = "account-picker";
       }
       persist(); if (["family", "account", "account-picker"].includes(state.page)) render();
-      }, (error) => showListenerError("Family members", error));
+      }, (error) => { if (isCurrentScope()) showListenerError("Family members", error); });
     }
   }
   if (canAdmin()) {
     pendingUsersUnsubscribe = backend.subscribePendingUsers((users) => {
+      if (!isCurrentScope()) return;
       state.pendingUsers = users.filter((user) => user.schoolId === SCHOOL_ID);
       persist(); if (state.page === "settings-detail" && ["admin", "users"].includes(state.settingsDetail)) render();
-    }, (error) => showListenerError("Pending accounts", error));
+    }, (error) => { if (isCurrentScope()) showListenerError("Pending accounts", error); });
   }
 }
 
-async function handleAuthUser(user) {
-  authUser = user;
-  if (!user) {
-    userProfile = null; familyLink = null; activeFamilyId = null; remoteMode = Boolean(backend?.enabled);
-    promptAccountPickerAfterFamilyLoad = false;
-    state.family.members = []; state.conversations = []; state.messages = {}; state.activeConversationId = null;
-    state.classes = []; state.events = []; render(); return;
+async function handleAuthUser(user, revision = null, force = false) {
+  const uid = user?.uid || null;
+  const loadKey = uid || "__signed-out__";
+  if (revision === null) {
+    if (!force && authInitialized && authUser?.uid === uid) return;
+    if (!force && !authInitialized && authLoadForUid === loadKey) return;
+    revision = ++authSessionRevision;
   }
+  if (!backend?.enabled || revision !== authSessionRevision) return;
+  if (!force && authInitialized && authUser?.uid === uid) return;
+  if (!force && !authInitialized && authLoadForUid === loadKey) return;
+
+  authLoadForUid = loadKey;
+  authInitialized = false;
+  authAccountReady = false;
   remoteMode = true;
+  authUser = user || null;
+  userProfile = null;
+  familyLink = null;
+  activeFamilyId = null;
+  directory = [];
+  promptAccountPickerAfterFamilyLoad = false;
+  stopListeners();
+  state.isDemoSignedIn = false;
+  state.error = "";
+  state.family = { name: "Family Account", tribe: "Lamanites", members: [] };
+  state.conversations = []; state.messages = {}; state.activeConversationId = null;
+  state.classes = []; state.events = []; state.pendingUsers = [];
+  state.joinedRequests = []; state.classJoinRequests = []; state.selectedPersonIds = []; state.pinnedConversationIds = [];
+  state.notificationPrefs = { messages: true, announcements: true, events: true };
+  state.currentUser = {
+    name: user?.displayName || "School member", email: user?.email || "",
+    role: "Student", color: "blue",
+    initials: (user?.displayName || "CT").split(/\s+/).map((part) => part[0]).slice(0, 2).join("")
+  };
+  state.activeMemberId = uid || "";
+  state.page = "home";
+  if (!user) {
+    authInitialized = true;
+    authLoadForUid = null;
+    persist(); render(); return;
+  }
+  const isCurrentLoad = () => revision === authSessionRevision && authUser?.uid === uid;
+  render();
   try {
-    userProfile = await backend.getUserProfile(user.uid);
-    if (userProfile) {
-      familyLink = await backend.getFamilyLink(user.uid);
-      if (!familyLink && userProfile.familyId) familyLink = await backend.getOwnerFamilyLink(user.uid, userProfile.familyId);
-      if (userProfile.status === "active") await backend.ensureIdentityProfile(user.uid, userProfile, familyLink);
+    const profile = await backend.getUserProfile(uid);
+    if (!isCurrentLoad()) return;
+    userProfile = profile;
+    if (!profile) {
+      state.error = "This Firebase sign-in has no school account profile. Sign out and create an account, or ask a school Admin to review it.";
+    } else if (profile.status === "active") {
+      familyLink = await backend.getFamilyLink(uid);
+      if (!isCurrentLoad()) return;
+      if (!familyLink && profile.familyId) familyLink = await backend.getOwnerFamilyLink(uid, profile.familyId);
+      if (!isCurrentLoad()) return;
+
+      // A stale selected profile must never carry over into a new sign-in. Reset to
+      // the authenticated user's own identity before opening any private listeners.
+      if (profile.activeMemberId && profile.activeMemberId !== uid && familyLink?.accountType !== "linked") {
+        await backend.setActiveMember(uid, uid);
+        if (!isCurrentLoad()) return;
+        profile.activeMemberId = uid;
+      }
+      await backend.ensureIdentityProfile(uid, profile, familyLink);
+      if (!isCurrentLoad()) return;
       activeFamilyId = familyLink?.status === "active" ? familyLink.familyId : null;
       promptAccountPickerAfterFamilyLoad = familyLink?.accountType === "owner";
-      if (familyLink?.accountType === "owner" && userProfile.activeMemberId && userProfile.activeMemberId !== user.uid) {
-        await backend.setActiveMember(user.uid, user.uid);
-        userProfile.activeMemberId = user.uid;
-      }
-      state.conversations = [];
-      state.classes = [];
-      state.events = [];
-      state.messages = {};
-      state.pendingUsers = [];
-      state.family = { name: "Family Account", tribe: "Lamanites", members: [] };
-      state.currentUser = { ...state.currentUser, name: userProfile.displayName || user.displayName || "School member", email: user.email, role: titleRole(userProfile.role), initials: (userProfile.displayName || user.displayName || "CT").split(/\s+/).map((part) => part[0]).slice(0,2).join("") };
-      state.notificationPrefs = { ...state.notificationPrefs, ...(userProfile.notificationPrefs || {}) };
-      state.activeMemberId = familyLink?.accountType === "linked" ? (familyLink.memberId || user.uid) : (userProfile.activeMemberId || user.uid);
+      state.currentUser = {
+        name: profile.displayName || user.displayName || "School member", email: user.email || "",
+        role: titleRole(profile.role), color: "blue",
+        initials: (profile.displayName || user.displayName || "CT").split(/\s+/).map((part) => part[0]).slice(0, 2).join("")
+      };
+      state.notificationPrefs = { messages: true, announcements: true, events: true, ...(profile.notificationPrefs || {}) };
+      state.activeMemberId = familyLink?.accountType === "linked" ? (familyLink.memberId || uid) : uid;
       state.page = "home";
-      connectDataListeners();
+      authAccountReady = true;
+      connectDataListeners(revision);
     }
-  } catch (error) { state.error = error.message || "Unable to read this account."; }
+  } catch (error) {
+    if (!isCurrentLoad()) return;
+    userProfile = null;
+    authAccountReady = false;
+    state.error = authMessage(error);
+  }
+  if (!isCurrentLoad()) return;
+  authInitialized = true;
+  authLoadForUid = null;
   persist(); render();
 }
 
@@ -989,9 +1079,19 @@ async function handleClick(event) {
     }
     case "demo-signin": state.isDemoSignedIn = true; state.currentUser = { name: "Emma Smith", email: "emma.smith@example.com", role: "Student", color: "blue", initials: "ES" }; state.activeMemberId = "emma-smith"; state.page = "home"; persist(); render(); break;
     case "auth-mode": state.authMode = state.authMode === "signin" ? "signup" : "signin"; state.error = ""; render(); break;
+    case "retry-account-load":
+      if (authUser && backend?.enabled) await handleAuthUser(authUser, null, true);
+      break;
     case "sign-out":
-      if (backend?.enabled && authUser) { await backend.signOut(); stopListeners(); }
-      state.isDemoSignedIn = false; state.currentUser = { name: "Emma Smith", email: "emma.smith@example.com", role: "Student", color: "blue", initials: "ES" }; state.page = "home"; persist(); render(); break;
+      if (backend?.enabled && authUser) {
+        await backend.signOut();
+        await handleAuthUser(null, null, true);
+      } else {
+        state.isDemoSignedIn = false;
+        state.currentUser = { name: "School member", email: "", role: "Student", color: "blue", initials: "CT" };
+        state.activeMemberId = ""; state.page = "home"; persist(); render();
+      }
+      break;
     case "delete-chat":
       if (confirm(`Delete “${activeConversation().title}” for all members? This cannot be undone.`)) {
         if (backend?.enabled && authUser) {
@@ -1065,7 +1165,7 @@ async function handleSubmit(event) {
       const credential = state.authMode === "signup"
         ? await backend.signUp(email, password, String(data.get("displayName") || "").trim(), String(data.get("requestedRole") || "Student").toLowerCase())
         : await backend.signIn(email, password);
-      if (credential?.user) await handleAuthUser(credential.user);
+      if (credential?.user) await handleAuthUser(credential.user, null, state.authMode === "signup");
     } catch (error) { state.error = authMessage(error); }
     isBusy = false; render(); return;
   }
@@ -1256,18 +1356,32 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=15").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=16").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
-    if (backend?.enabled) handleAuthUser(user).catch((error) => showToast(error.message || "Could not load your account."));
+    authObserverReceived = true;
+    if (backend?.enabled) {
+      const uid = user?.uid || null;
+      const loadKey = uid || "__signed-out__";
+      if ((authInitialized && authUser?.uid === uid) || (!authInitialized && authLoadForUid === loadKey)) return;
+      handleAuthUser(user, ++authSessionRevision).catch((error) => showToast(error.message || "Could not load your account."));
+    }
   }, (error) => {
-    if (error) showToast(error.message || "Firebase connection failed.");
+    if (error) {
+      state.error = authMessage(error);
+      if (backend?.enabled) { authInitialized = true; render(); }
+      else showToast(error.message || "Firebase connection failed.");
+    }
   });
   remoteMode = Boolean(backend?.enabled);
   if (backend?.enabled) {
-    if (pendingAuthUser) await handleAuthUser(pendingAuthUser);
-    else render();
-  } else render();
+    if (authObserverReceived) await handleAuthUser(pendingAuthUser, ++authSessionRevision);
+  } else {
+    // A previous local demo session must never be mistaken for a Firebase login.
+    state.isDemoSignedIn = false;
+    authInitialized = true;
+    render();
+  }
 }
 boot();
