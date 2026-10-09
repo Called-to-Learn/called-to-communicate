@@ -194,6 +194,14 @@ service cloud.firestore {
           : (identityId == request.auth.uid && request.auth.uid in conversation.memberUids));
     }
 
+    function conversationReader() {
+      let identityId = identityIdForUser();
+      return (resource.data.memberProfileIds is list
+          ? (identityId in resource.data.memberProfileIds && canAccessProfile(identityId))
+          : (identityId == request.auth.uid && request.auth.uid in resource.data.memberUids))
+        || presidencyOrAdmin();
+    }
+
     function conversationManager(conversationId) {
       let conversationPath = /databases/$(database)/documents/conversations/$(conversationId);
       return activeUser()
@@ -524,7 +532,7 @@ service cloud.firestore {
     match /conversations/{conversationId} {
       allow read: if activeUser()
         && resource.data.schoolId == 'ctla'
-        && (conversationMember(conversationId) || conversationManager(conversationId));
+        && conversationReader();
 
       allow create: if activeUser()
         && request.resource.data.schoolId == 'ctla'
