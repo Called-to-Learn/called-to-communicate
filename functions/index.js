@@ -264,6 +264,62 @@ exports.approveSchoolUser = onCall({ region: "us-central1", maxInstances: 10 }, 
   return { approved: true, userId, role };
 });
 
+exports.setSchoolUserRole = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before changing a school role.");
+  const callerUid = request.auth.uid;
+  const caller = await requireActiveSchoolUser(callerUid);
+  const { identityId: callerIdentityId, profile: callerProfile } = await getActiveIdentityProfile(
+    callerUid, request.data?.identityId, caller
+  );
+  const callerRole = String(callerProfile.role || (callerIdentityId === callerUid ? caller.role : "student")).toLowerCase();
+  if (callerRole !== "admin") throw new HttpsError("permission-denied", "Only an Admin can change school roles.");
+
+  const userId = String(request.data?.userId || "");
+  const role = String(request.data?.role || "").toLowerCase();
+  if (!userId || userId.includes("/") || !["parent", "student", "teacher", "presidency", "admin"].includes(role)) {
+    throw new HttpsError("invalid-argument", "Choose a valid account and school role.");
+  }
+
+  const userRef = db.doc(`users/${userId}`);
+  const userSnapshot = await userRef.get();
+  if (!userSnapshot.exists || userSnapshot.data().status !== "active" || userSnapshot.data().schoolId !== "ctla") {
+    throw new HttpsError("failed-precondition", "The active school account was not found.");
+  }
+  const user = userSnapshot.data();
+  if (user.role === "admin" && role !== "admin") {
+    const admins = await db.collection("users")
+      .where("schoolId", "==", "ctla")
+      .where("status", "==", "active")
+      .where("role", "==", "admin")
+      .get();
+    if (admins.size <= 1) throw new HttpsError("failed-precondition", "The school must keep at least one active Admin.");
+  }
+
+  const identityId = user.familyMemberId || userId;
+  const identityRef = db.doc(`profiles/${identityId}`);
+  const identitySnapshot = await identityRef.get();
+  const familyId = identitySnapshot.data()?.familyId || user.familyId;
+  let memberRef = null;
+  let memberSnapshot = null;
+  if (familyId && identitySnapshot.exists) {
+    memberRef = db.doc(`families/${familyId}/members/${identityId}`);
+    memberSnapshot = await memberRef.get();
+  }
+
+  const now = FieldValue.serverTimestamp();
+  const batch = db.batch();
+  batch.update(userRef, { role, updatedAt: now });
+  batch.set(db.doc(`directory/${userId}`), {
+    displayName: user.displayName || "School member", role, status: "active", schoolId: "ctla"
+  }, { merge: true });
+  if (identitySnapshot.exists) batch.update(identityRef, { role, updatedAt: now });
+  if (memberSnapshot?.exists && memberSnapshot.data().accountType === "linked") {
+    batch.update(memberRef, { role, updatedAt: now });
+  }
+  await batch.commit();
+  return { updated: true, userId, role };
+});
+
 // Reuse the existing callable name so Firebase updates its deployed invoker instead of creating
 // a new Cloud Run service that would need a fresh allUsers IAM grant.
 exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {

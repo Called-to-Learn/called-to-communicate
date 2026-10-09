@@ -118,38 +118,13 @@ export async function connectFirebase(onAuthChanged, onError) {
         });
         return result.data;
       },
-      setUserRole: async (uid, role) => {
-        const normalizedRole = String(role).toLowerCase();
-        const userRef = firestoreSDK.doc(db, "users", uid);
-        const userSnapshot = await firestoreSDK.getDoc(userRef);
-        if (!userSnapshot.exists() || userSnapshot.data().status !== "active" || userSnapshot.data().schoolId !== "ctla") throw new Error("The active school account was not found.");
-        if (userSnapshot.data().role === "admin" && normalizedRole !== "admin") {
-          const admins = await firestoreSDK.getDocs(firestoreSDK.query(
-            firestoreSDK.collection(db, "users"),
-            firestoreSDK.where("schoolId", "==", "ctla"),
-            firestoreSDK.where("status", "==", "active"),
-            firestoreSDK.where("role", "==", "admin")
-          ));
-          if (admins.size <= 1) throw new Error("The school must keep at least one active Admin.");
-        }
-        const data = userSnapshot.data();
-        const identityId = data.familyMemberId || uid;
-        const identityRef = firestoreSDK.doc(db, "profiles", identityId);
-        const identitySnapshot = await firestoreSDK.getDoc(identityRef);
-        const batch = firestoreSDK.writeBatch(db);
-        const updatedAt = firestoreSDK.serverTimestamp();
-        batch.update(userRef, { role: normalizedRole, updatedAt });
-        batch.set(firestoreSDK.doc(db, "directory", uid), {
-          displayName: data.displayName || "School member", role: normalizedRole, status: "active", schoolId: "ctla"
-        }, { merge: true });
-        if (identitySnapshot.exists()) batch.update(identityRef, { role: normalizedRole, updatedAt });
-        const familyId = identitySnapshot.data()?.familyId || data.familyId;
-        if (familyId && identitySnapshot.exists()) {
-          const memberRef = firestoreSDK.doc(db, "families", familyId, "members", identityId);
-          const memberSnapshot = await firestoreSDK.getDoc(memberRef);
-          if (memberSnapshot.exists() && memberSnapshot.data().accountType === "linked") batch.update(memberRef, { role: normalizedRole, updatedAt });
-        }
-        await batch.commit();
+      setUserRole: async (uid, role, identityId) => {
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "setSchoolUserRole")({
+          userId: uid, role: String(role).toLowerCase(), identityId: identityId || auth.currentUser?.uid
+        });
+        return result.data;
       },
       getUserProfile: async (uid) => {
         const ref = firestoreSDK.doc(db, "users", uid);

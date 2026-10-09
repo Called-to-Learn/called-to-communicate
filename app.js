@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=17";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=18";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -966,7 +966,7 @@ async function handleClick(event) {
       const select = $(`#staff-role-${CSS.escape(id)}`);
       if (!select) break;
       try {
-        await backend.setUserRole(id, select.value);
+        await backend.setUserRole(id, select.value, activeIdentityId());
         showToast(`Role updated to ${titleRole(select.value)}.`);
       } catch (error) { showFirebaseError("Change user role", error); }
       break;
