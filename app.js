@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=23";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=24";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -133,6 +133,11 @@ let pendingFileKind = "any";
 let pendingAuthUser = null;
 let authObserverReceived = false;
 let isBusy = false;
+let familySetupDraft = null;
+let familySetupMemberDraft = null;
+let familySetupView = "create";
+let familySetupEditingIndex = null;
+let familySetupLinkOpen = false;
 
 const persist = () => {
   // Remote school records stay in Firebase's authenticated client cache, not shared browser storage.
@@ -264,8 +269,9 @@ function render() {
   else if (state.page === "create-announcement") page = renderCreateAnnouncement();
   else if (state.page === "edit-chat") page = renderEditChat();
   else page = renderHome();
-  const hideTabs = ["chat", "account-picker", "subaccount-pin", "family-owner-pin"].includes(state.page);
-  const hideRail = ["account-picker", "subaccount-pin", "family-owner-pin"].includes(state.page);
+  const familySetupActive = state.page === "family" && remoteMode && !activeFamilyId;
+  const hideTabs = familySetupActive || ["chat", "account-picker", "subaccount-pin", "family-owner-pin"].includes(state.page);
+  const hideRail = familySetupActive || ["account-picker", "subaccount-pin", "family-owner-pin"].includes(state.page);
   app.innerHTML = `<div class="app-layout">${hideRail ? "" : rail()}<main class="main-column">${page}</main></div>${hideTabs ? "" : tabBar()}`;
   if (state.page === "chat") requestAnimationFrame(() => { const messages = $("#chat-messages"); if (messages) messages.scrollTop = messages.scrollHeight; });
 }
@@ -377,7 +383,7 @@ function renderSettings() {
 function renderFamily() {
   if (remoteMode && !activeFamilyId) return renderFamilySetup();
   const family = state.family;
-  const familyRoles = remoteMode ? ["Parent", "Student", "Teacher", "Presidency"] : roles;
+  const familyRoles = remoteMode ? (isAdmin() ? ["Parent", "Student", "Teacher", "Presidency"] : ["Parent", "Student"]) : roles;
   const canManageFamily = !remoteMode || (familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid);
   const memberForm = state.addingMember && canManageFamily ? `<form id="family-member-form" class="card" style="padding:15px;margin:12px 0">
     <div class="form-field"><label for="member-account-type">Account type</label><select id="member-account-type" name="accountType"><option value="managed">Managed subaccount · shares this login</option><option value="linked">Link a personal account</option></select></div>
@@ -404,11 +410,120 @@ function renderFamily() {
     ${canManageFamily ? `<div class="notice-card mt-12"><strong>About family accounts</strong>Managed profiles share the family login and keep their own roles, classes, messages, calendars, and settings. Linked members keep their own Firebase login and school profile.</div>` : `<div class="notice-card mt-12"><strong>Linked personal account</strong>Your login and school profile remain independent. Family membership does not grant access to your private chats or settings.</div>`}</section>`;
 }
 
+const familyTribes = ["Lamanites", "Nephites", "Jaredites", "Mulekites"];
+const familySetupRoles = ["Parent", "Student", "Teacher", "Presidency"];
+
+function ensureFamilySetupDraft() {
+  if (familySetupDraft) return familySetupDraft;
+  const lastName = state.currentUser.name.split(/\s+/).filter(Boolean).slice(-1)[0] || "Family";
+  familySetupDraft = { name: `The ${lastName} Family`, tribe: "Lamanites", ownerRole: "Parent", members: [] };
+  familySetupView = "create";
+  return familySetupDraft;
+}
+
+function familySetupProgress(active) {
+  const labels = ["Create Family", "Add Members", "Finish"];
+  return `<div class="family-setup-progress" aria-label="Step ${active} of 3">${labels.map((label, index) => {
+    const step = index + 1;
+    const stateClass = step < active ? "complete" : step === active ? "current" : "";
+    return `${step > 1 ? `<span class="family-progress-line ${step <= active ? "complete" : ""}"></span>` : ""}<div class="family-progress-step ${stateClass}"><span class="family-progress-dot">${step < active ? "✓" : step}</span><span>${label}</span></div>`;
+  }).join("")}</div>`;
+}
+
+function familySetupSummary(draft, editAction = "family-setup-edit-family") {
+  return `<div class="family-setup-summary"><span class="family-setup-summary-icon">${icon("users")}</span><div><strong>${esc(draft.name || "Your Family")}</strong><span>${draft.members.length + 1} ${draft.members.length ? "members" : "account holder"}${draft.tribe ? ` · ${esc(draft.tribe)} Tribe` : ""}</span></div><button type="button" class="button lavender" data-action="${editAction}">Edit</button></div>`;
+}
+
+function familySetupRoleCards(selected, scope, disabled = false) {
+  return `<div class="family-role-grid">${familySetupRoles.map((role) => {
+    const restricted = scope === "member" && ["Teacher", "Presidency"].includes(role) && !isAdmin();
+    return `<button type="button" class="family-role-card ${selected === role ? "selected" : ""}" data-action="family-setup-role" data-scope="${scope}" data-role="${role}" ${disabled || restricted ? "disabled" : ""}>${icon(roleIcons[role])}<span>${role}</span><span class="family-role-radio" aria-hidden="true"></span></button>`;
+  }).join("")}</div>`;
+}
+
+function familySetupTop(title, subtitle, step, showSkip = false) {
+  const backAction = familySetupView === "create" ? "family-setup-exit" : "family-setup-back";
+  return `<div class="family-setup-top"><button type="button" class="family-setup-back" data-action="${backAction}">${icon("back")}<span>Back</span></button>${showSkip ? `<button type="button" class="family-setup-skip" data-action="family-setup-skip">Skip for now</button>` : ""}${step > 1 ? familySetupProgress(step) : ""}<div class="family-setup-heading"><h1>${title}</h1><p>${subtitle}</p></div></div>`;
+}
+
+function familySetupMemberDetail(member) {
+  const bits = [member.role, member.grade || "", member.role === "Student" && member.tribe ? `Tribe: ${member.tribe}` : "",
+    member.accountType === "linked" ? "Linked account" : member.role === "Student" ? "Subaccount" : ""].filter(Boolean);
+  return bits.join("  ·  ");
+}
+
+function renderFamilySetupCreate(draft) {
+  const ownerName = state.currentUser.name || "Family Account Holder";
+  return `${familySetupTop("Create Family", "Set up your family account", 1)}
+    <form id="family-create-form" class="family-setup-content">
+      <div class="family-together-card"><div class="family-together-art"><span class="family-heart">♥</span>${icon("users")}</div><div><h2>Together at School</h2><p>Keep your family connected. Add family members, manage their accounts, and stay informed all in one place.</p></div></div>
+      <section class="family-field-section"><label for="setup-family-name">Family Name</label><p>Choose a name for your family account.</p><div class="family-select-field"><span class="family-field-icon">${icon("home")}</span><input id="setup-family-name" name="name" value="${esc(draft.name)}" maxlength="100" required><button type="button" class="family-clear-field" data-action="family-setup-clear-name" aria-label="Clear family name">×</button></div></section>
+      <section class="family-field-section"><h2>Choose Your Role</h2><p>Select your role in the family.</p>${familySetupRoleCards("Parent", "owner", true)}<span class="family-field-note">${esc(ownerName)} is the family account holder. School roles remain verified by Called to Learn Academy.</span></section>
+      <section class="family-field-section"><h2>Choose Your Tribe</h2><p>Select your tribe. You can change this later.</p><label class="family-select-field"><span class="family-field-icon">${icon("users")}</span><select name="tribe">${familyTribes.map((tribe) => `<option ${draft.tribe === tribe ? "selected" : ""}>${tribe}</option>`).join("")}</select><span class="family-select-chevron">⌄</span></label></section>
+      <div class="family-next-card"><span class="family-next-icon">i</span><div><strong>What’s Next?</strong><p>After creating your family, you’ll be able to add family members and set up their individual accounts with their own roles, classes, and settings.</p></div></div>
+      <button class="button primary wide family-create-next" type="submit">Create Family</button>
+    </form>
+    <button class="family-link-toggle" type="button" data-action="family-setup-toggle-link">Already have a family invitation? Link an existing account</button>
+    ${familySetupLinkOpen ? `<div class="family-link-panel"><p>Sign in to your personal school account, then paste the code from your family account holder.</p><form id="family-link-form"><label for="setup-family-code">Family invitation code</label><input id="setup-family-code" name="code" required autocomplete="one-time-code" placeholder="Paste your invitation code"><button class="button lavender wide" type="submit">Link My Existing Account</button></form></div>` : ""}`;
+}
+
+function renderFamilySetupMembers(draft) {
+  const owner = `<article class="family-setup-member"><span class="family-setup-member-avatar owner">${icon("user")}</span><div class="family-setup-member-copy"><strong>${esc(state.currentUser.name || "Family Account Holder")}</strong><span>${esc(titleRole(userProfile?.role || "parent"))}  ·  Account Holder</span></div><span class="family-setup-row-chevron">${icon("chevron")}</span></article>`;
+  const rows = draft.members.map((member, index) => `<article class="family-setup-member"><span class="family-setup-member-avatar tone-${index % 4}">${icon(member.role === "Student" ? "user" : roleIcons[member.role] || "user")}</span><div class="family-setup-member-copy"><strong>${esc(member.name)}</strong><span>${esc(familySetupMemberDetail(member))}</span></div><button type="button" class="family-setup-row-chevron" data-action="family-setup-edit-member" data-index="${index}" aria-label="Edit ${esc(member.name)}">${icon("chevron")}</button></article>`).join("");
+  return `${familySetupTop("Add Family Members", "Review your family members and add anyone else before finishing.", 2, true)}
+    <div class="family-setup-content">${familySetupSummary(draft)}<h2 class="family-setup-section-title">Family Members</h2><div class="family-setup-member-list">${owner}${rows || `<div class="family-setup-empty">Add profiles for the people who will use this family account.</div>`}</div>
+    <button type="button" class="button lavender wide family-add-member" data-action="family-setup-add-member">${icon("plus")}Add Family Member</button>
+    <div class="family-setup-footer"><button type="button" class="button outline" data-action="family-setup-back">Back</button><button type="button" class="button primary" data-action="family-setup-review">Finish</button></div></div>`;
+}
+
+function syncFamilySetupMemberDraft() {
+  const form = $("#family-setup-member-form");
+  if (!form) return;
+  const data = new FormData(form);
+  familySetupMemberDraft = {
+    ...(familySetupMemberDraft || {}), name: String(data.get("name") || ""), role: String(data.get("role") || "Student"),
+    grade: String(data.get("grade") || ""), tribe: String(data.get("tribe") || "Lamanites"),
+    accountType: String(data.get("accountType") || "managed"), email: String(data.get("email") || ""),
+    pin: String(data.get("pin") || ""), confirmPin: String(data.get("confirmPin") || "")
+  };
+}
+
+function renderFamilySetupMember(draft) {
+  const member = familySetupMemberDraft || { name: "", role: "Student", grade: "", tribe: draft.tribe, accountType: "managed", email: "", pin: "", confirmPin: "" };
+  const editing = Number.isInteger(familySetupEditingIndex);
+  const pinDots = Array.from({ length: 4 }, (_, index) => `<span class="family-pin-dot ${member.pin?.length > index ? "filled" : ""}"></span>`).join("");
+  return `${familySetupTop(editing ? "Edit Family Member" : "Add Family Member", "Create a profile for this family member before finishing setup.", 2, true)}
+    <form id="family-setup-member-form" class="family-setup-content">
+      ${familySetupSummary(draft)}
+      <div class="family-field-section"><label for="setup-member-name">Full Name</label><div class="family-select-field"><span class="family-field-icon">${icon("user")}</span><input id="setup-member-name" name="name" value="${esc(member.name)}" required maxlength="100" placeholder="Enter full name"></div></div>
+      <div class="family-field-section"><h2>Role</h2><p>Select the role for this family member.</p><input type="hidden" name="role" value="${esc(member.role)}">${familySetupRoleCards(member.role, "member")}${!isAdmin() ? `<span class="family-field-note">Teacher and Presidency roles are assigned by a school Admin.</span>` : ""}</div>
+      <div class="family-field-section"><label for="setup-member-grade">Grade <span>(Optional)</span></label><label class="family-select-field"><span class="family-field-icon">${icon("calendar")}</span><select id="setup-member-grade" name="grade"><option value="">Select grade</option>${["Kindergarten", ...Array.from({ length: 12 }, (_, i) => `Grade ${i + 1}`)].map((grade) => `<option ${member.grade === grade ? "selected" : ""}>${grade}</option>`).join("")}</select><span class="family-select-chevron">⌄</span></label></div>
+      <div class="family-field-section"><label for="setup-member-tribe">Tribe</label><p>Assign a tribe for this family member.</p><label class="family-select-field"><span class="family-field-icon">${icon("users")}</span><select id="setup-member-tribe" name="tribe">${familyTribes.map((tribe) => `<option ${member.tribe === tribe ? "selected" : ""}>${tribe}</option>`).join("")}</select><span class="family-select-chevron">⌄</span></label></div>
+      <div class="family-field-section"><h2>Account Type</h2><div class="family-account-type"><button type="button" class="${member.accountType === "managed" ? "selected" : ""}" data-action="family-setup-account-type" data-type="managed">Subaccount</button><button type="button" class="${member.accountType === "linked" ? "selected" : ""}" data-action="family-setup-account-type" data-type="linked">Link existing account</button></div></div>
+      ${member.accountType === "linked" ? `<div class="family-field-section"><label for="setup-member-email">Personal Account Email</label><div class="family-select-field"><span class="family-field-icon">@</span><input id="setup-member-email" name="email" value="${esc(member.email)}" type="email" required placeholder="member@example.com"></div><span class="family-field-note">They will sign in with their existing account. No duplicate profile is created.</span></div>` : `<div class="family-field-section"><h2>Create PIN</h2><div class="family-create-pin-card"><span class="family-pin-lock">${icon("shield")}</span><div class="family-pin-copy"><strong>4-digit PIN</strong><span>Set a PIN to protect this member’s profile</span></div><div class="family-pin-dots">${pinDots}</div></div><input class="family-pin-input" name="pin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" minlength="4" maxlength="4" value="${esc(member.pin)}" required aria-label="Create four digit PIN"><div class="family-pin-confirm"><label for="setup-member-pin-confirm">Confirm PIN</label><input id="setup-member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" minlength="4" maxlength="4" value="${esc(member.confirmPin)}" required placeholder="Enter the four digits again"></div><span class="family-field-note">PINs are stored securely and are required when opening this profile.</span></div>`}
+      <div class="family-setup-member-actions"><button type="submit" class="button primary wide" name="next" value="list">${editing ? "Save Family Member" : "Add Family Member"}</button><button type="button" class="family-link-toggle" data-action="family-setup-add-another">Add Another Member</button></div>
+      <div class="family-setup-footer"><button type="button" class="button outline" data-action="family-setup-back">Back</button><button type="submit" class="button primary" name="next" value="review">Finish</button></div>
+    </form>`;
+}
+
+function renderFamilySetupReview(draft) {
+  const owner = `<article class="family-setup-member"><span class="family-setup-member-avatar owner">${icon("users")}</span><div class="family-setup-member-copy"><strong>${esc(state.currentUser.name || "Family Account Holder")}</strong><span>${esc(titleRole(userProfile?.role || "parent"))}  ·  Account Holder</span></div><span class="family-setup-row-chevron">${icon("chevron")}</span></article>`;
+  const rows = draft.members.map((member, index) => `<article class="family-setup-member"><span class="family-setup-member-avatar tone-${index % 4}">${icon(member.role === "Student" ? "cap" : roleIcons[member.role] || "user")}</span><div class="family-setup-member-copy"><strong>${esc(member.name)}</strong><span>${esc(familySetupMemberDetail(member))}</span></div><button type="button" class="button lavender family-review-edit" data-action="family-setup-edit-member" data-index="${index}">Edit</button></article>`).join("");
+  return `${familySetupTop("Review Family", "Make sure everything looks right before creating your family account.", 3)}
+    <div class="family-setup-content">${familySetupSummary(draft)}<h2 class="family-setup-section-title">Family Members</h2><div class="family-setup-member-list review">${owner}${rows}</div>
+    <button type="button" class="button lavender wide family-add-member" data-action="family-setup-add-member">${icon("plus")}Add Another Member</button>
+    <div class="family-setup-footer"><button type="button" class="button outline" data-action="family-setup-back">Back</button><button type="button" class="button primary" data-action="family-setup-create" ${isBusy ? "disabled" : ""}>${isBusy ? "Creating…" : "Create Family"}</button></div></div>`;
+}
+
 function renderFamilySetup() {
+  const draft = ensureFamilySetupDraft();
   const canCreate = ["Parent", "Admin"].includes(verifiedRole());
-  return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Create a family login or link your existing account to an invitation.</p></div></div>
-    ${canCreate ? `<div class="notice-card"><strong>Together at School</strong>Managed subaccounts share this login while keeping individual school roles, classes, chats, calendars, and settings.</div><form id="family-create-form" class="card" style="padding:16px"><div class="form-field"><label>Family name</label><input name="name" required value="The ${(state.currentUser.name.split(/\s+/).slice(-1)[0] || "Family")} Family"></div><div class="form-field"><label>Your tribe</label><select name="tribe"><option>Lamanites</option><option>Nephites</option><option>Jaredites</option><option>Mulekites</option></select></div><button class="button primary wide" type="submit">Create Family Account</button></form>` : ""}
-    <div class="section-heading"><h2>Link a personal account</h2></div><p class="page-subtitle">Sign in to your existing school account, then enter the code from your family account holder.</p><form id="family-link-form" class="card" style="padding:16px"><div class="form-field"><label>Family invitation code</label><input name="code" required autocomplete="one-time-code" placeholder="Paste your invitation code"></div><button class="button primary wide" type="submit">Link My Existing Account</button></form></section>`;
+  if (!canCreate) return `<section class="page family-setup-page"><div class="family-setup-top"><button class="family-setup-back" data-action="family-setup-exit">${icon("back")}<span>Back</span></button><div class="family-setup-heading"><h1>Link a Family Account</h1><p>Sign in with your independent school account and enter the invitation code from your family account holder.</p></div></div><form id="family-link-form" class="family-setup-content family-link-panel"><label for="setup-family-code">Family invitation code</label><input id="setup-family-code" name="code" required autocomplete="one-time-code" placeholder="Paste your invitation code"><button class="button primary wide" type="submit">Link My Existing Account</button></form></section>`;
+  let content = familySetupView === "members" ? renderFamilySetupMembers(draft)
+    : familySetupView === "member" ? renderFamilySetupMember(draft)
+      : familySetupView === "review" ? renderFamilySetupReview(draft)
+        : renderFamilySetupCreate(draft);
+  return `<section class="page family-setup-page ${familySetupView === "create" ? "first-step" : ""}">${content}</section>`;
 }
 
 function renderAccountPicker() {
@@ -426,7 +541,8 @@ function renderFamilyOwnerPin() {
 function renderSubaccountPin() {
   const member = state.family.members.find((entry) => entry.id === state.pendingPinMemberId && entry.accountType === "managed");
   if (!member) return `<section class="page account-picker-page">${brand()}<h1 class="page-title">Subaccount unavailable</h1><button class="button primary wide" data-action="back-to-account-picker">Back to profiles</button></section>`;
-  return `<section class="page account-picker-page pin-page">${brand()}<button class="back-link" data-action="back-to-account-picker">${icon("back")} All profiles</button><div class="page-title-row"><div><h1 class="page-title">Enter ${esc(member.name)}’s PIN</h1><p class="page-subtitle">Enter their six-digit PIN to open this profile.</p></div></div><form id="subaccount-pin-form" data-member-id="${esc(member.id)}" class="card pin-form pin-pad-card"><div class="pin-indicators" id="pin-indicators" role="status" aria-live="polite" aria-label="0 of 6 digits entered">${Array.from({ length: 6 }, (_, i) => `<span class="pin-indicator" data-pin-slot="${i}" aria-hidden="true"></span>`).join("")}</div><label class="pin-entry-label" for="subaccount-pin">Type your PIN or tap the numbers</label><input id="subaccount-pin" name="pin" class="pin-code-input" type="password" inputmode="none" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required placeholder="Six-digit PIN" aria-label="Six-digit PIN"><div class="number-pad" aria-label="PIN number pad">${[1,2,3,4,5,6,7,8,9].map((digit) => `<button class="number-pad-key" type="button" data-action="pin-key" data-value="${digit}" aria-label="${digit}">${digit}</button>`).join("")}<span class="number-pad-spacer" aria-hidden="true"></span><button class="number-pad-key" type="button" data-action="pin-key" data-value="0" aria-label="0">0</button><button class="number-pad-key number-pad-delete" type="button" data-action="pin-delete" aria-label="Delete last digit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 3 12l6 7h12V5H9Z"></path><path d="m13 9 5 6m0-6-5 6"></path></svg></button></div><button class="button primary wide pin-continue" type="submit" disabled>Continue as ${esc(member.name)}</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+  const pinLength = Number(member.pinLength) === 4 ? 4 : 6;
+  return `<section class="page account-picker-page pin-page">${brand()}<button class="back-link" data-action="back-to-account-picker">${icon("back")} All profiles</button><div class="page-title-row"><div><h1 class="page-title">Enter ${esc(member.name)}’s PIN</h1><p class="page-subtitle">Enter their ${pinLength}-digit PIN to open this profile.</p></div></div><form id="subaccount-pin-form" data-member-id="${esc(member.id)}" data-pin-length="${pinLength}" class="card pin-form pin-pad-card"><div class="pin-indicators" id="pin-indicators" role="status" aria-live="polite" aria-label="0 of ${pinLength} digits entered">${Array.from({ length: pinLength }, (_, i) => `<span class="pin-indicator" data-pin-slot="${i}" aria-hidden="true"></span>`).join("")}</div><label class="pin-entry-label" for="subaccount-pin">Type your PIN or tap the numbers</label><input id="subaccount-pin" name="pin" class="pin-code-input" type="password" inputmode="none" pattern="[0-9]{${pinLength}}" minlength="${pinLength}" maxlength="${pinLength}" autocomplete="one-time-code" required placeholder="${pinLength}-digit PIN" aria-label="${pinLength}-digit PIN"><div class="number-pad" aria-label="PIN number pad">${[1,2,3,4,5,6,7,8,9].map((digit) => `<button class="number-pad-key" type="button" data-action="pin-key" data-value="${digit}" aria-label="${digit}">${digit}</button>`).join("")}<span class="number-pad-spacer" aria-hidden="true"></span><button class="number-pad-key" type="button" data-action="pin-key" data-value="0" aria-label="0">0</button><button class="number-pad-key number-pad-delete" type="button" data-action="pin-delete" aria-label="Delete last digit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 3 12l6 7h12V5H9Z"></path><path d="m13 9 5 6m0-6-5 6"></path></svg></button></div><button class="button primary wide pin-continue" type="submit" disabled>Continue as ${esc(member.name)}</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
 }
 
 function renderAccount() {
@@ -928,6 +1044,85 @@ function goBack() {
   persist(); render();
 }
 
+async function finishFamilySetup() {
+  const draft = ensureFamilySetupDraft();
+  if (!draft.name.trim()) { familySetupView = "create"; render(); showToast("Enter a family name to continue."); return; }
+  if (!backend?.enabled || !authUser) { showToast("Sign in with your school account before creating a family."); return; }
+  isBusy = true; render();
+  try {
+    const payloadMembers = draft.members.map(({ name, role, grade, tribe, accountType, email }) => ({
+      name, role, grade, tribe, accountType, ...(accountType === "linked" ? { email } : {})
+    }));
+    const result = await backend.createFamily(authUser.uid, {
+      name: draft.name.trim(), tribe: draft.tribe,
+      ownerName: userProfile?.displayName || authUser.displayName || "Family Account Holder",
+      members: payloadMembers
+    });
+    const familyId = result?.familyId || result;
+    if (!familyId) throw new Error("Firebase did not return the family ID. Please try again.");
+    const returnedManaged = (result.members || []).filter((member) => member.accountType === "managed");
+    const owner = {
+      id: authUser.uid, uid: authUser.uid, email: authUser.email,
+      name: state.currentUser.name || userProfile?.displayName || "Family Account Holder",
+      role: titleRole(userProfile?.role || "parent"), note: "Account Holder", accountType: "owner",
+      color: "purple", pinConfigured: false, pinLength: 6
+    };
+    const managedMembers = returnedManaged.map((member, index) => ({
+      id: member.memberId, uid: authUser.uid, ownerUid: authUser.uid,
+      name: member.name, role: titleRole(member.role), note: member.grade || "", grade: member.grade || "",
+      tribe: member.tribe, accountType: "managed", color: colorClasses[(index % (colorClasses.length - 1)) + 1],
+      pinConfigured: false, pinLength: 4
+    }));
+    familyLink = { familyId, memberId: authUser.uid, accountType: "owner", status: "active" };
+    activeFamilyId = familyId;
+    state.family = { name: draft.name.trim(), tribe: draft.tribe, members: [owner, ...managedMembers] };
+    state.activeMemberId = authUser.uid;
+    if (userProfile) {
+      userProfile.activeMemberId = authUser.uid;
+      userProfile.requestedFamilyAccount = false;
+    }
+    familyOwnerLocked = true;
+    promptAccountPickerAfterFamilyLoad = false;
+    state.pendingPinMemberId = null;
+    let pinFailures = 0;
+    for (let index = 0; index < managedMembers.length; index++) {
+      const member = managedMembers[index];
+      const pin = draft.members.filter((entry) => entry.accountType === "managed")[index]?.pin || "";
+      try {
+        await backend.setFamilyMemberPin(familyId, member.id, pin);
+        member.pinConfigured = true;
+      } catch (error) {
+        console.error("Could not save a new family member PIN", error);
+        pinFailures++;
+      }
+    }
+    familySetupDraft = null; familySetupMemberDraft = null; familySetupEditingIndex = null;
+    familySetupView = "create"; familySetupLinkOpen = false;
+    state.page = "family-owner-pin";
+    connectDataListeners(); persist(); render();
+    const linkedInvites = (result.members || []).filter((member) => member.accountType === "linked" && member.code);
+    let invitationCopied = false;
+    if (linkedInvites.length) {
+      const invitationText = linkedInvites.map((member) => `${member.name}: ${member.code}`).join("\n");
+      try {
+        await navigator.clipboard.writeText(invitationText);
+        invitationCopied = true;
+      } catch {
+        prompt("Share these invitation codes with the matching accounts:", invitationText);
+      }
+    }
+    const setupMessage = pinFailures
+      ? `Family created. ${pinFailures} member PIN${pinFailures === 1 ? "" : "s"} could not be saved; set them from Family Members.`
+      : "Family created. Set a PIN for the account holder to continue.";
+    showToast(linkedInvites.length && invitationCopied ? `${setupMessage} Invitation code${linkedInvites.length === 1 ? "" : "s"} copied.` : setupMessage);
+  } catch (error) {
+    showFirebaseError("Create family account", error);
+  } finally {
+    isBusy = false;
+    if (state.page === "family" && familySetupView === "review") render();
+  }
+}
+
 async function handleClick(event) {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -936,7 +1131,7 @@ async function handleClick(event) {
   switch (action) {
     case "pin-key": {
       const input = $("#subaccount-pin");
-      if (!input || input.value.length >= 6 || !/^\d$/.test(value || "")) break;
+      if (!input || input.value.length >= Number(input.maxLength || 6) || !/^\d$/.test(value || "")) break;
       input.value += value;
       updatePinPad();
       if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) input.focus({ preventScroll: true });
@@ -1037,6 +1232,58 @@ async function handleClick(event) {
       if (!remoteMode && roles.includes(role)) { state.currentUser.role = role; persist(); render(); showToast(`Previewing ${role} view`); }
       break;
     case "family": state.page = "family"; render(); break;
+    case "family-setup-exit":
+      familySetupDraft = null; familySetupMemberDraft = null; familySetupEditingIndex = null; familySetupView = "create";
+      state.page = "home"; state.activeTab = "settings"; render(); break;
+    case "family-setup-back":
+      if (familySetupView === "member") { syncFamilySetupMemberDraft(); familySetupView = "members"; familySetupEditingIndex = null; }
+      else if (familySetupView === "review") familySetupView = "members";
+      else if (familySetupView === "members") familySetupView = "create";
+      render(); break;
+    case "family-setup-skip": familySetupView = "members"; familySetupMemberDraft = null; render(); break;
+    case "family-setup-review": familySetupView = "review"; render(); break;
+    case "family-setup-add-member":
+      familySetupMemberDraft = { name: "", role: "Student", grade: "", tribe: ensureFamilySetupDraft().tribe, accountType: "managed", email: "", pin: "", confirmPin: "" };
+      familySetupEditingIndex = null; familySetupView = "member"; render(); requestAnimationFrame(() => $("#setup-member-name")?.focus()); break;
+    case "family-setup-edit-family": familySetupView = "create"; render(); break;
+    case "family-setup-edit-member": {
+      const index = Number(target.dataset.index);
+      const member = ensureFamilySetupDraft().members[index];
+      if (!member) break;
+      familySetupEditingIndex = index;
+      familySetupMemberDraft = { ...member };
+      familySetupView = "member"; render(); break;
+    }
+    case "family-setup-remove-member": {
+      const index = Number(target.dataset.index);
+      ensureFamilySetupDraft().members.splice(index, 1);
+      familySetupView = "members"; render(); break;
+    }
+    case "family-setup-role":
+      if (!familySetupRoles.includes(role)) break;
+      if (target.dataset.scope === "member") {
+        syncFamilySetupMemberDraft();
+        familySetupMemberDraft = { ...(familySetupMemberDraft || {}), role };
+        render();
+      }
+      break;
+    case "family-setup-account-type":
+      syncFamilySetupMemberDraft();
+      familySetupMemberDraft = { ...(familySetupMemberDraft || {}), accountType: target.dataset.type, pin: "", confirmPin: "" };
+      render(); break;
+    case "family-setup-add-another": {
+      const form = $("#family-setup-member-form");
+      if (!form) break;
+      form.dataset.next = "another";
+      form.requestSubmit(); break;
+    }
+    case "family-setup-toggle-link": familySetupLinkOpen = !familySetupLinkOpen; render(); break;
+    case "family-setup-clear-name": {
+      const input = $("#setup-family-name");
+      if (input) { input.value = ""; input.focus(); }
+      break;
+    }
+    case "family-setup-create": await finishFamilySetup(); break;
     case "settings-detail":
       if (key === "family") {
         state.page = "family";
@@ -1123,8 +1370,9 @@ async function handleClick(event) {
         if (name?.trim()) {
           const updates = { name: name.trim() };
           if (member.accountType === "managed") {
-            const role = prompt("School role: Parent, Student, Teacher, or Presidency", member.role);
-            if (role && ["Parent", "Student", "Teacher", "Presidency"].includes(role)) updates.role = role;
+            const allowedFamilyRoles = isAdmin() ? ["Parent", "Student", "Teacher", "Presidency"] : ["Parent", "Student"];
+            const role = prompt(`School role: ${allowedFamilyRoles.join(", ")}`, member.role);
+            if (role && allowedFamilyRoles.includes(role)) updates.role = role;
             updates.grade = prompt("Grade (leave blank if not applicable)", member.note || "") || "";
             updates.tribe = prompt("Tribe", member.tribe || "") || "";
           }
@@ -1256,15 +1504,16 @@ function updatePinPad() {
   const input = $("#subaccount-pin");
   const indicators = $("#pin-indicators");
   if (!input || !indicators) return;
-  input.value = input.value.replace(/\D/g, "").slice(0, 6);
+  const pinLength = Number(input.maxLength || 6);
+  input.value = input.value.replace(/\D/g, "").slice(0, pinLength);
   const count = input.value.length;
-  indicators.setAttribute("aria-label", `${count} of 6 digits entered`);
+  indicators.setAttribute("aria-label", `${count} of ${pinLength} digits entered`);
   $$("[data-pin-slot]", indicators).forEach((slot, index) => {
     slot.classList.toggle("filled", index < count);
-    slot.classList.toggle("current", index === count && count < 6);
+    slot.classList.toggle("current", index === count && count < pinLength);
   });
   const submit = $(".pin-continue");
-  if (submit) submit.disabled = count !== 6;
+  if (submit) submit.disabled = count !== pinLength;
 }
 
 function handleInput(event) {
@@ -1286,6 +1535,10 @@ function handleInput(event) {
     state.search = target.value;
     const cursor = target.selectionStart;
     render(); const input = $("#new-search"); input?.focus(); input?.setSelectionRange(cursor, cursor);
+  } else if (target.form?.id === "family-setup-member-form") {
+    if (target.name === "pin" || target.name === "confirmPin") target.value = target.value.replace(/\D/g, "").slice(0, 4);
+    syncFamilySetupMemberDraft();
+    if (target.name === "pin") $$(".family-pin-dot").forEach((dot, index) => dot.classList.toggle("filled", index < target.value.length));
   } else if (target.id === "subaccount-pin") updatePinPad();
 }
 
@@ -1363,24 +1616,36 @@ async function handleSubmit(event) {
   } else if (form.id === "family-create-form") {
     const name = String(data.get("name") || "").trim();
     const tribe = String(data.get("tribe") || "Lamanites");
-    if (!name) return;
-    if (backend?.enabled && authUser) {
-      try {
-        familyLink = null;
-        const familyId = await backend.createFamily(authUser.uid, { name, tribe, ownerName: userProfile?.displayName || authUser.displayName || "Family Account Holder" });
-        activeFamilyId = familyId;
-        familyLink = { familyId, memberId: authUser.uid, accountType: "owner", status: "active" };
-        userProfile.activeMemberId = authUser.uid;
-        userProfile.requestedFamilyAccount = false;
-        familyOwnerLocked = true;
-        promptAccountPickerAfterFamilyLoad = false;
-        state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", accountType: "owner", color: "purple", pinConfigured: false }] };
-        state.page = "family-owner-pin";
-        connectDataListeners(); persist(); render(); showToast("Family account created. Set a PIN for the account holder to continue.");
-      } catch (error) { showFirebaseError("Create family account", error); }
-    } else {
-      state.family.name = name; state.family.tribe = tribe; state.page = "family"; persist(); render();
-    }
+    if (!name) { showToast("Enter a family name."); return; }
+    familySetupDraft = { ...ensureFamilySetupDraft(), name, tribe };
+    familySetupView = "members"; familySetupMemberDraft = null; familySetupEditingIndex = null;
+    render();
+  } else if (form.id === "family-setup-member-form") {
+    const name = String(data.get("name") || "").trim();
+    const role = String(data.get("role") || "Student");
+    const grade = String(data.get("grade") || "").trim();
+    const tribe = String(data.get("tribe") || ensureFamilySetupDraft().tribe);
+    const accountType = String(data.get("accountType") || familySetupMemberDraft?.accountType || "managed");
+    const email = String(data.get("email") || "").trim();
+    const pin = String(data.get("pin") || "");
+    if (!name) { showToast("Enter the family member’s full name."); return; }
+    if (!familySetupRoles.includes(role)) { showToast("Choose a valid school role."); return; }
+    if (["Teacher", "Presidency"].includes(role) && !isAdmin()) { showToast("Only a school Admin can assign Teacher or Presidency roles."); return; }
+    if (accountType === "linked" && !email) { showToast("Enter the email used by the existing school account."); return; }
+    if (accountType === "managed" && !/^\d{4}$/.test(pin)) { showToast("Choose a four-digit PIN for this subaccount."); return; }
+    if (accountType === "managed" && pin !== String(data.get("confirmPin") || "")) { showToast("The PINs do not match."); return; }
+    const member = { name, role, grade, tribe, accountType, ...(accountType === "linked" ? { email } : { pin }) };
+    const index = familySetupEditingIndex;
+    if (Number.isInteger(index)) ensureFamilySetupDraft().members[index] = member;
+    else ensureFamilySetupDraft().members.push(member);
+    familySetupMemberDraft = null; familySetupEditingIndex = null;
+    const next = event.submitter?.value || form.dataset.next || "list";
+    form.dataset.next = "";
+    if (next === "another") {
+      familySetupMemberDraft = { name: "", role: "Student", grade: "", tribe: ensureFamilySetupDraft().tribe, accountType: "managed", email: "", pin: "", confirmPin: "" };
+      familySetupView = "member";
+    } else familySetupView = next === "review" ? "review" : "members";
+    render();
   } else if (form.id === "family-pin-form") {
     const memberId = form.dataset.memberId;
     const pin = String(data.get("pin") || "");
@@ -1389,7 +1654,7 @@ async function handleSubmit(event) {
     try {
       await backend.setFamilyMemberPin(activeFamilyId, memberId, pin);
       const member = state.family.members.find((entry) => entry.id === memberId);
-      if (member) member.pinConfigured = true;
+      if (member) { member.pinConfigured = true; member.pinLength = pin.length; }
       state.pinManagementMemberId = null;
       persist(); render(); showToast(member?.accountType === "owner" ? "Family account holder PIN saved." : "Subaccount PIN saved.");
     } catch (error) { showFirebaseError("Save subaccount PIN", error); }
@@ -1438,7 +1703,8 @@ async function handleSubmit(event) {
   } else if (form.id === "subaccount-pin-form") {
     const memberId = form.dataset.memberId;
     const pin = String(data.get("pin") || "");
-    if (!/^\d{6}$/.test(pin)) { showToast("Enter all six digits on the number pad."); return; }
+    const pinLength = Number(form.dataset.pinLength || 6);
+    if (pin.length !== pinLength || !/^\d+$/.test(pin)) { showToast(`Enter all ${pinLength} digits on the number pad.`); return; }
     try {
       await backend.selectFamilyMemberWithPin(activeFamilyId, memberId, pin);
       const member = state.family.members.find((entry) => entry.id === memberId);

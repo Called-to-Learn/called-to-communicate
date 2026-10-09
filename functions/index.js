@@ -374,6 +374,25 @@ async function createFamilyAccountRecord(uid, user, data) {
   if (!name || name.length > 100 || !["Lamanites", "Nephites", "Jaredites", "Mulekites"].includes(tribe)) {
     throw new HttpsError("invalid-argument", "Enter a family name and choose a valid tribe.");
   }
+  const requestedMembers = Array.isArray(data.members) ? data.members : [];
+  if (requestedMembers.length > 20) throw new HttpsError("invalid-argument", "A family can add up to 20 members during setup.");
+  const allowedRoles = ["parent", "student", "teacher", "presidency"];
+  const initialMembers = requestedMembers.map((member) => {
+    const memberName = String(member?.name || "").trim();
+    const role = String(member?.role || "student").toLowerCase();
+    const memberTribe = String(member?.tribe || tribe);
+    const memberGrade = String(member?.grade || "").trim();
+    const accountType = member?.accountType === "linked" ? "linked" : "managed";
+    const email = String(member?.email || "").trim().toLowerCase();
+    if (!memberName || memberName.length > 100 || !allowedRoles.includes(role)
+        || (["teacher", "presidency"].includes(role) && String(user.role || "").toLowerCase() !== "admin")
+        || !["Lamanites", "Nephites", "Jaredites", "Mulekites"].includes(memberTribe)
+        || memberGrade.length > 40
+        || (accountType === "linked" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      throw new HttpsError("invalid-argument", "Check the name, role, grade, tribe, and linked-account email for each family member.");
+    }
+    return { name: memberName, role, tribe: memberTribe, grade: memberGrade, accountType, email };
+  });
 
   const userRef = db.doc(`users/${uid}`);
   const profileRef = db.doc(`profiles/${uid}`);
@@ -416,6 +435,18 @@ async function createFamilyAccountRecord(uid, user, data) {
       transaction.get(familyRef), transaction.get(memberRef)
     ]);
 
+    const managedEntries = initialMembers.filter((member) => member.accountType === "managed").map((member) => {
+      const memberRef = db.collection(`families/${familyRef.id}/members`).doc();
+      return { ...member, memberRef, profileRef: db.doc(`profiles/${memberRef.id}`) };
+    });
+    const inviteEntries = initialMembers.filter((member) => member.accountType === "linked").map((member) => ({
+      ...member, inviteRef: db.collection("familyInvites").doc()
+    }));
+    const newProfileSnapshots = await Promise.all(managedEntries.map((entry) => transaction.get(entry.profileRef)));
+    if (newProfileSnapshots.some((snapshot) => snapshot.exists)) {
+      throw new HttpsError("already-exists", "A family profile could not be created because its ID is already in use. Please retry.");
+    }
+
     if (familySnapshot.exists && familySnapshot.data().ownerUid !== uid) {
       throw new HttpsError("permission-denied", "This account is not the owner of its existing family.");
     }
@@ -426,15 +457,16 @@ async function createFamilyAccountRecord(uid, user, data) {
 
     const displayName = String(currentUser.displayName || currentProfile.displayName || "Family Account Holder").trim();
     const familyData = familySnapshot.exists ? familySnapshot.data() : null;
+    const memberIds = managedEntries.map((entry) => entry.memberRef.id);
     if (!familySnapshot.exists) {
       transaction.create(familyRef, {
-        name, tribe, ownerUid: uid, managerUids: [uid], memberIds: [uid], memberUids: [uid],
-        memberCount: 1, schoolId: "ctla", createdAt: now
+        name, tribe, ownerUid: uid, managerUids: [uid], memberIds: [uid, ...memberIds], memberUids: [uid],
+        memberCount: 1 + managedEntries.length, schoolId: "ctla", createdAt: now
       });
     } else {
       transaction.set(familyRef, {
-        managerUids: FieldValue.arrayUnion(uid), memberIds: FieldValue.arrayUnion(uid),
-        memberUids: FieldValue.arrayUnion(uid), updatedAt: now
+        name, tribe, managerUids: FieldValue.arrayUnion(uid), memberIds: FieldValue.arrayUnion(uid, ...memberIds),
+        memberUids: FieldValue.arrayUnion(uid), memberCount: FieldValue.increment(managedEntries.length), updatedAt: now
       }, { merge: true });
     }
     if (!memberSnapshot.exists) {
@@ -443,6 +475,24 @@ async function createFamilyAccountRecord(uid, user, data) {
         accountType: "owner", status: "active", name: displayName,
         role: String(currentUser.role || "parent").toLowerCase(), grade: "",
         tribe: familyData?.tribe || tribe, createdAt: now
+      });
+    }
+    for (const entry of managedEntries) {
+      transaction.create(entry.memberRef, {
+        familyId: familyRef.id, memberId: entry.memberRef.id, uid, ownerUid: uid,
+        accountType: "managed", status: "active", name: entry.name, role: entry.role,
+        grade: entry.grade, tribe: entry.tribe, pinConfigured: false, createdAt: now
+      });
+      transaction.create(entry.profileRef, {
+        displayName: entry.name, role: entry.role, accountType: "managed", ownerUid: uid,
+        managerUid: uid, familyId: familyRef.id, grade: entry.grade, tribe: entry.tribe,
+        settings: {}, status: "active", schoolId: "ctla", createdAt: now
+      });
+    }
+    for (const entry of inviteEntries) {
+      transaction.create(entry.inviteRef, {
+        familyId: familyRef.id, ownerUid: uid, email: entry.email, name: entry.name,
+        role: entry.role, status: "pending", type: "link", createdBy: uid, createdAt: now
       });
     }
     transaction.set(profileRef, {
@@ -455,7 +505,11 @@ async function createFamilyAccountRecord(uid, user, data) {
       status: "active", updatedAt: now
     }, { merge: true });
     transaction.update(userRef, { activeMemberId: uid, requestedFamilyAccount: false, updatedAt: now });
-    return { familyId: familyRef.id, name: familyData?.name || name, tribe: familyData?.tribe || tribe };
+    const familyMembers = [
+      ...managedEntries.map((entry) => ({ memberId: entry.memberRef.id, name: entry.name, role: entry.role, grade: entry.grade, tribe: entry.tribe, accountType: "managed", pinConfigured: false })),
+      ...inviteEntries.map((entry) => ({ name: entry.name, role: entry.role, grade: entry.grade, tribe: entry.tribe, accountType: "linked", code: entry.inviteRef.id }))
+    ];
+    return { familyId: familyRef.id, name: familyData?.name || name, tribe: familyData?.tribe || tribe, members: familyMembers };
   });
 }
 
@@ -473,7 +527,7 @@ async function setFamilyMemberPin(uid, user, data) {
   if (data.identityId !== uid || !["parent", "admin"].includes(String(user.role || "").toLowerCase())) {
     throw new HttpsError("permission-denied", "Only the family account holder can set family profile PINs.");
   }
-  if (!/^\d{6}$/.test(pin)) throw new HttpsError("invalid-argument", "Choose a six-digit PIN.");
+  if (!/^\d{4}$|^\d{6}$/.test(pin)) throw new HttpsError("invalid-argument", "Choose a four- or six-digit PIN.");
 
   const salt = randomBytes(16);
   const derivedKey = await scryptAsync(pin, salt, 64);
@@ -496,6 +550,9 @@ async function setFamilyMemberPin(uid, user, data) {
     const profile = profileSnapshot.data();
     const currentUser = userSnapshot.data() || {};
     const ownerProfile = memberId === uid;
+    if ((ownerProfile && pin.length !== 6) || (!ownerProfile && ![4, 6].includes(pin.length))) {
+      throw new HttpsError("invalid-argument", ownerProfile ? "The family account holder PIN must contain six digits." : "Choose a four- or six-digit PIN for this subaccount.");
+    }
     const validOwner = ownerProfile && member.accountType === "owner"
       && member.ownerUid === uid && profile.accountType !== "managed"
       && profile.ownerUid === uid && profile.familyId === familyId;
@@ -511,9 +568,9 @@ async function setFamilyMemberPin(uid, user, data) {
     transaction.set(secretRef, {
       familyId, memberId, ownerUid: uid, salt: salt.toString("base64url"),
       hash: Buffer.from(derivedKey).toString("base64url"), failedAttempts: 0,
-      lockedUntil: null, updatedAt: now
+      pinLength: pin.length, lockedUntil: null, updatedAt: now
     });
-    transaction.update(memberRef, { pinConfigured: true, updatedAt: now });
+    transaction.update(memberRef, { pinConfigured: true, pinLength: pin.length, updatedAt: now });
   });
   return { saved: true };
 }
@@ -523,8 +580,8 @@ async function selectFamilyMemberWithPin(uid, user, data) {
   const memberId = String(data.memberId || "");
   const pin = String(data.pin || "");
   validateFamilyPinRequest(familyId, memberId);
-  if (data.identityId !== uid || !/^\d{6}$/.test(pin)) {
-    throw new HttpsError("invalid-argument", "Enter the six-digit PIN for this family profile.");
+  if (data.identityId !== uid || !/^\d{4}$|^\d{6}$/.test(pin)) {
+    throw new HttpsError("invalid-argument", "Enter the four- or six-digit PIN for this family profile.");
   }
 
   const familyRef = db.doc(`families/${familyId}`);
@@ -546,6 +603,10 @@ async function selectFamilyMemberWithPin(uid, user, data) {
     const profile = profileSnapshot.data();
     const secret = secretSnapshot.data();
     const ownerProfile = memberId === uid;
+    const expectedPinLength = Number(secret.pinLength || member.pinLength || 6);
+    if (pin.length !== expectedPinLength) {
+      throw new HttpsError("invalid-argument", `Enter the ${expectedPinLength}-digit PIN for this family profile.`);
+    }
     const validOwner = ownerProfile && member.accountType === "owner"
       && member.ownerUid === uid && profile.accountType !== "managed"
       && profile.ownerUid === uid && profile.familyId === familyId;

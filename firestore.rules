@@ -175,8 +175,9 @@ service cloud.firestore {
             && familyManager(get(path).data.familyId))));
     }
 
-    function validFamilyRole(role) {
-      return role in ['parent', 'student', 'teacher', 'presidency'];
+    function assignableFamilyRole(role) {
+      return role in ['parent', 'student']
+        || (role in ['teacher', 'presidency'] && admin());
     }
 
     function validProfileSettings(settings) {
@@ -438,7 +439,7 @@ service cloud.firestore {
         && request.resource.data.accountType == 'managed'
         && request.resource.data.familyId is string
         && request.resource.data.schoolId == 'ctla'
-        && validFamilyRole(request.resource.data.role)
+        && assignableFamilyRole(request.resource.data.role)
         && request.resource.data.status == 'active';
       allow update: if (
           canAccessProfile(profileId)
@@ -477,7 +478,8 @@ service cloud.firestore {
           && resource.data.accountType == 'managed'
           && resource.data.ownerUid == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'role', 'grade', 'tribe', 'settings', 'updatedAt', 'status', 'familyId'])
-          && validFamilyRole(request.resource.data.role)
+          && (assignableFamilyRole(request.resource.data.role)
+            || request.resource.data.role == resource.data.role)
           && request.resource.data.ownerUid == resource.data.ownerUid
           && request.resource.data.managerUid == resource.data.managerUid
           && request.resource.data.accountType == resource.data.accountType
@@ -490,7 +492,7 @@ service cloud.firestore {
         || (selectedManagedProfile(profileId)
           && resource.data.accountType == 'managed'
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'role', 'grade', 'tribe', 'settings', 'updatedAt'])
-          && validFamilyRole(request.resource.data.role)
+          && request.resource.data.role == resource.data.role
           && request.resource.data.ownerUid == resource.data.ownerUid
           && request.resource.data.managerUid == resource.data.managerUid
           && request.resource.data.accountType == resource.data.accountType
@@ -556,7 +558,7 @@ service cloud.firestore {
         && request.resource.data.name is string
         && request.resource.data.status == 'pending'
         && request.resource.data.type == 'link'
-        && validFamilyRole(request.resource.data.role);
+        && assignableFamilyRole(request.resource.data.role);
       allow update: if activeUser()
         && resource.data.status == 'pending'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedBy', 'acceptedAt'])
@@ -732,7 +734,7 @@ service cloud.firestore {
                 && request.resource.data.accountType == 'managed'
                 && request.resource.data.uid == request.auth.uid
                 && request.resource.data.ownerUid == request.auth.uid
-                && validFamilyRole(request.resource.data.role)))
+                && assignableFamilyRole(request.resource.data.role)))
           || (activeUser()
             && request.resource.data.accountType == 'linked'
             && memberId == request.auth.uid
@@ -751,7 +753,8 @@ service cloud.firestore {
           && request.resource.data.ownerUid == resource.data.ownerUid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'role', 'grade', 'tribe', 'updatedAt'])
           && (resource.data.accountType == 'managed'
-            ? validFamilyRole(request.resource.data.role)
+            ? (assignableFamilyRole(request.resource.data.role)
+              || request.resource.data.role == resource.data.role)
             : request.resource.data.role == resource.data.role))
           ;
         allow update: if selectedManagedProfile(memberId)
@@ -764,7 +767,7 @@ service cloud.firestore {
           && request.resource.data.accountType == resource.data.accountType
           && request.resource.data.ownerUid == resource.data.ownerUid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'role', 'grade', 'tribe', 'updatedAt'])
-          && validFamilyRole(request.resource.data.role)
+          && request.resource.data.role == resource.data.role
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0
           && request.resource.data.name.size() <= 100;

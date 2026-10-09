@@ -323,9 +323,9 @@ export async function connectFirebase(onAuthChanged, onError) {
         const functions = functionsSDK.getFunctions(app, "us-central1");
         const result = await functionsSDK.httpsCallable(functions, "createFamilyAccount")({
           operation: "create-family", name: family.name, tribe: family.tribe,
-          ownerName: family.ownerName, identityId: uid
+          ownerName: family.ownerName, members: family.members || [], identityId: uid
         });
-        return result.data.familyId;
+        return result.data;
       },
       setFamilyMemberPin: async (familyId, memberId, pin) => {
         const functionsSDK = await sdk("functions");
