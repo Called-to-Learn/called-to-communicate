@@ -110,29 +110,13 @@ export async function connectFirebase(onAuthChanged, onError) {
         const q = firestoreSDK.query(firestoreSDK.collection(db, "users"), firestoreSDK.where("status", "==", "pending"));
         return firestoreSDK.onSnapshot(q, (snapshot) => next(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))), error);
       },
-      approveUser: async (uid, role) => {
-        const normalizedRole = String(role).toLowerCase();
-        const userRef = firestoreSDK.doc(db, "users", uid);
-        const userSnapshot = await firestoreSDK.getDoc(userRef);
-        if (!userSnapshot.exists() || userSnapshot.data().status !== "pending") throw new Error("This account is no longer pending approval.");
-        const data = userSnapshot.data();
-        const identityId = data.familyMemberId || uid;
-        const identityRef = firestoreSDK.doc(db, "profiles", identityId);
-        const identitySnapshot = await firestoreSDK.getDoc(identityRef);
-        const batch = firestoreSDK.writeBatch(db);
-        const updatedAt = firestoreSDK.serverTimestamp();
-        batch.update(userRef, { role: normalizedRole, status: "active", updatedAt });
-        batch.set(firestoreSDK.doc(db, "directory", uid), {
-          displayName: data.displayName || "School member", role: normalizedRole, status: "active", schoolId: "ctla"
-        }, { merge: true });
-        if (identitySnapshot.exists()) batch.update(identityRef, { role: normalizedRole, status: "active", updatedAt });
-        const familyId = identitySnapshot.data()?.familyId || data.familyId;
-        if (familyId && identitySnapshot.exists()) {
-          const memberRef = firestoreSDK.doc(db, "families", familyId, "members", identityId);
-          const memberSnapshot = await firestoreSDK.getDoc(memberRef);
-          if (memberSnapshot.exists() && memberSnapshot.data().accountType === "linked") batch.update(memberRef, { role: normalizedRole, updatedAt });
-        }
-        await batch.commit();
+      approveUser: async (uid, role, identityId) => {
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "approveSchoolUser")({
+          userId: uid, role: String(role).toLowerCase(), identityId: identityId || auth.currentUser?.uid
+        });
+        return result.data;
       },
       setUserRole: async (uid, role) => {
         const normalizedRole = String(role).toLowerCase();

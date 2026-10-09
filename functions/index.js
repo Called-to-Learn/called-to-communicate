@@ -202,6 +202,68 @@ exports.respondToClassJoin = onCall({ region: "us-central1", maxInstances: 10 },
   return { approved: approve };
 });
 
+exports.approveSchoolUser = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before approving a school account.");
+  const callerUid = request.auth.uid;
+  const caller = await requireActiveSchoolUser(callerUid);
+  const { identityId: callerIdentityId, profile: callerProfile } = await getActiveIdentityProfile(
+    callerUid, request.data?.identityId, caller
+  );
+  const callerRole = String(callerProfile.role || (callerIdentityId === callerUid ? caller.role : "student")).toLowerCase();
+  if (callerRole !== "admin" && callerRole !== "presidency") {
+    throw new HttpsError("permission-denied", "Only an Admin or Presidency account can approve school users.");
+  }
+
+  const userId = String(request.data?.userId || "");
+  const role = String(request.data?.role || "").toLowerCase();
+  if (!userId || userId.includes("/") || !["parent", "student", "teacher", "presidency", "admin"].includes(role)) {
+    throw new HttpsError("invalid-argument", "Choose a valid account and school role.");
+  }
+  if (callerRole === "presidency" && role === "admin") {
+    throw new HttpsError("permission-denied", "Only an Admin can approve an Admin account.");
+  }
+
+  const userRef = db.doc(`users/${userId}`);
+  const userSnapshot = await userRef.get();
+  if (!userSnapshot.exists || userSnapshot.data().status !== "pending" || userSnapshot.data().schoolId !== "ctla") {
+    throw new HttpsError("failed-precondition", "This account is no longer pending approval.");
+  }
+  const user = userSnapshot.data();
+  const identityId = user.familyMemberId || userId;
+  const identityRef = db.doc(`profiles/${identityId}`);
+  const identitySnapshot = await identityRef.get();
+  const identityProfile = identitySnapshot.exists ? identitySnapshot.data() : null;
+  if (!identitySnapshot.exists && identityId !== userId) {
+    throw new HttpsError("failed-precondition", "The account's family profile is missing. Restore the family profile before approving this account.");
+  }
+
+  const now = FieldValue.serverTimestamp();
+  const batch = db.batch();
+  batch.update(userRef, { role, status: "active", updatedAt: now });
+  batch.set(db.doc(`directory/${userId}`), {
+    displayName: user.displayName || "School member", role, status: "active", schoolId: "ctla"
+  }, { merge: true });
+  if (identitySnapshot.exists) {
+    batch.update(identityRef, { role, status: "active", updatedAt: now });
+  } else {
+    batch.set(identityRef, {
+      displayName: user.displayName || "School member", role, accountType: "personal", ownerUid: userId,
+      schoolId: "ctla", status: "active", settings: {}, createdAt: now
+    });
+  }
+
+  const familyId = identityProfile?.familyId || user.familyId;
+  if (familyId && identitySnapshot.exists) {
+    const memberRef = db.doc(`families/${familyId}/members/${identityId}`);
+    const memberSnapshot = await memberRef.get();
+    if (memberSnapshot.exists && memberSnapshot.data().accountType === "linked") {
+      batch.update(memberRef, { role, updatedAt: now });
+    }
+  }
+  await batch.commit();
+  return { approved: true, userId, role };
+});
+
 // Reuse the existing callable name so Firebase updates its deployed invoker instead of creating
 // a new Cloud Run service that would need a fresh allUsers IAM grant.
 exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {

@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=16";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=17";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -956,7 +956,7 @@ async function handleClick(event) {
       const select = $(`#approve-role-${CSS.escape(id)}`);
       const role = select?.value || "student";
       if (backend?.enabled && canAdmin()) {
-        try { await backend.approveUser(id, role); showToast(`Account approved as ${titleRole(role)}.`); }
+        try { await backend.approveUser(id, role, activeIdentityId()); showToast(`Account approved as ${titleRole(role)}.`); }
         catch (error) { showFirebaseError("Approve account", error); }
       }
       break;
