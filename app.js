@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=14";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=15";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -873,7 +873,9 @@ async function createConversation() {
   };
   try {
     if (backend?.enabled && authUser) {
-      conversation.id = await backend.createConversation(conversation);
+      const created = await backend.createConversation(conversation);
+      conversation.id = created.conversationId;
+      Object.assign(conversation, created);
       state.conversations = [{ ...conversation, unread: 0, time: "Now" }, ...state.conversations.filter((item) => item.id !== conversation.id)];
     }
     else conversation.id = `new-${Date.now()}`;
@@ -1276,7 +1278,8 @@ async function handleSubmit(event) {
     };
     try {
       if (backend?.enabled && authUser) {
-        const id = await backend.createConversation(conversation);
+        const created = await backend.createConversation(conversation);
+        const id = created.conversationId;
         await backend.sendMessage(id, { senderName: state.currentUser.name, senderUid: authUser.uid, senderProfileId: activeIdentityId(), senderInitials: state.currentUser.initials, text });
       } else {
         conversation.id = `announcement-${Date.now()}`; conversation.time = "Now"; conversation.unread = 0;
@@ -1357,7 +1360,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=19").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=20").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;

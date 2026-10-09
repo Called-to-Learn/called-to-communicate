@@ -46,6 +46,22 @@ async function getActiveIdentityProfile(uid, requestedIdentityId, user) {
   return { identityId: activeIdentityId, profile: await getOwnedIdentityProfile(uid, activeIdentityId, user) };
 }
 
+async function getConversationParticipant(uid) {
+  const [user, directorySnapshot, linkSnapshot] = await Promise.all([
+    requireActiveSchoolUser(uid),
+    db.doc(`directory/${uid}`).get(),
+    db.doc(`familyLinks/${uid}`).get()
+  ]);
+  const directory = directorySnapshot.data();
+  if (!directorySnapshot.exists || directory.schoolId !== "ctla" || directory.status !== "active") {
+    throw new HttpsError("failed-precondition", "Only approved Called to Learn Academy accounts can join a conversation.");
+  }
+  const link = linkSnapshot.exists ? linkSnapshot.data() : null;
+  const identityId = link?.status === "active" && link.accountType === "linked" ? link.memberId : uid;
+  const profile = await getOwnedIdentityProfile(uid, identityId, user);
+  return { uid, identityId, name: profile.displayName || directory.displayName || user.displayName || "School member" };
+}
+
 exports.createClass = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before creating a class.");
   const uid = request.auth.uid;
@@ -338,7 +354,7 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
   const before = initial.data();
   const initialProfiles = Array.isArray(before.memberProfileIds) ? before.memberProfileIds : before.memberUids || [];
   if (!initialProfiles.includes(identityId)) throw new HttpsError("permission-denied", "You must be a member of this conversation.");
-  newUids = newUids.filter((memberUid) => !initialProfiles.includes(memberUid));
+  newUids = newUids.filter((memberUid) => !(before.memberUids || []).includes(memberUid));
   if (newUids.length === 0) return { success: true, alreadyMembers: true };
   const role = String(identityProfile.role || (identityId === uid ? user.role : "student")).toLowerCase();
   const isSchoolAdmin = role === "presidency" || (identityId === uid && role === "admin");
@@ -354,13 +370,8 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
     }
   }
 
-  const directorySnapshots = await db.getAll(...newUids.map((memberUid) => db.doc(`directory/${memberUid}`)));
-  const directoryByUid = new Map(directorySnapshots.map((snapshot) => [snapshot.id, snapshot.data()]));
-  const invalid = newUids.some((memberUid) => {
-    const member = directoryByUid.get(memberUid);
-    return !member || member.schoolId !== "ctla" || member.status !== "active";
-  });
-  if (invalid) throw new HttpsError("failed-precondition", "Only approved Called to Learn Academy accounts can be added.");
+  const participants = await Promise.all(newUids.map(getConversationParticipant));
+  const participantByUid = new Map(participants.map((participant) => [participant.uid, participant]));
 
   await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(conversationRef);
@@ -368,14 +379,19 @@ exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 1
     const conversation = snapshot.data();
     const currentProfiles = Array.isArray(conversation.memberProfileIds) ? conversation.memberProfileIds : conversation.memberUids || [];
     if (!currentProfiles.includes(identityId)) throw new HttpsError("permission-denied", "You are no longer a member of this conversation.");
-    const additions = newUids.filter((memberUid) => !currentProfiles.includes(memberUid));
+    const currentUids = new Set(conversation.memberUids || []);
+    const currentProfileSet = new Set(currentProfiles);
+    const additions = newUids.filter((memberUid) => {
+      const participant = participantByUid.get(memberUid);
+      return !currentUids.has(memberUid) && participant && !currentProfileSet.has(participant.identityId);
+    });
     if (additions.length === 0) return;
-    const memberUids = [...new Set([...(conversation.memberUids || []), ...newUids])];
-    const memberProfileIds = [...currentProfiles, ...additions];
+    const memberUids = [...new Set([...(conversation.memberUids || []), ...additions])];
+    const memberProfileIds = [...currentProfiles, ...additions.map((memberUid) => participantByUid.get(memberUid).identityId)];
     if (memberProfileIds.length > 100) throw new HttpsError("resource-exhausted", "This conversation has reached its 100-member limit.");
-    const memberNames = [...(conversation.memberNames || []), ...additions.map((memberUid) => directoryByUid.get(memberUid).displayName || "School member")];
+    const memberNames = [...(conversation.memberNames || []), ...additions.map((memberUid) => participantByUid.get(memberUid).name)];
     transaction.update(conversationRef, {
-      memberUids, memberProfileIds, memberNames, memberCount: memberProfileIds.length,
+      memberUids, memberProfileIds, memberNames, members: memberNames, memberCount: memberProfileIds.length,
       kind: conversation.kind === "direct" && memberProfileIds.length > 2 ? "group" : conversation.kind,
       updatedAt: FieldValue.serverTimestamp()
     });

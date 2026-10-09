@@ -221,13 +221,47 @@ export async function connectFirebase(onAuthChanged, onError) {
         return bytes;
       },
       createConversation: async (conversation) => {
+        const uid = auth.currentUser?.uid;
+        if (!uid) throw new Error("Sign in before starting a conversation.");
+        const identityId = conversation.createdByIdentityId || uid;
+        const ownerName = conversation.memberNames?.[0] || conversation.members?.[0] || "School member";
         const ref = await firestoreSDK.addDoc(firestoreSDK.collection(db, "conversations"), {
-          ...conversation,
+          title: conversation.title,
+          kind: conversation.kind || "direct",
           schoolId: "ctla",
-          updatedAt: firestoreSDK.serverTimestamp(),
-          createdAt: firestoreSDK.serverTimestamp()
+          createdBy: uid,
+          createdByIdentityId: identityId,
+          createdByRole: conversation.createdByRole || "student",
+          memberUids: [uid],
+          memberProfileIds: [identityId],
+          memberNames: [ownerName],
+          members: [ownerName],
+          memberCount: 1,
+          preview: conversation.preview || "Start a conversation",
+          color: conversation.color || "purple",
+          createdAt: firestoreSDK.serverTimestamp(),
+          updatedAt: firestoreSDK.serverTimestamp()
         });
-        return ref.id;
+        try {
+          const functionsSDK = await sdk("functions");
+          const functions = functionsSDK.getFunctions(app, "us-central1");
+          const addMembers = functionsSDK.httpsCallable(functions, "addConversationMembers");
+          const targetUids = [...new Set((conversation.memberUids || []).map(String))].filter((memberUid) => memberUid && memberUid !== uid);
+          if (!targetUids.length) throw new Error("Choose at least one other school member.");
+          for (let index = 0; index < targetUids.length; index += 50) {
+            await addMembers({ conversationId: ref.id, identityId, memberUids: targetUids.slice(index, index + 50) });
+          }
+          const snapshot = await firestoreSDK.getDoc(ref);
+          if (!snapshot.exists()) throw new Error("The conversation could not be loaded after it was created.");
+          return { conversationId: ref.id, ...snapshot.data() };
+        } catch (error) {
+          try {
+            const functionsSDK = await sdk("functions");
+            const functions = functionsSDK.getFunctions(app, "us-central1");
+            await functionsSDK.httpsCallable(functions, "deleteConversation")({ conversationId: ref.id, identityId });
+          } catch {}
+          throw error;
+        }
       },
       updateConversation: async (conversationId, updates) => {
         await firestoreSDK.updateDoc(firestoreSDK.doc(db, "conversations", conversationId), {
@@ -235,71 +269,22 @@ export async function connectFirebase(onAuthChanged, onError) {
         });
       },
       leaveConversation: async (conversationId, identityId) => {
-        const conversationRef = firestoreSDK.doc(db, "conversations", conversationId);
-        const snapshot = await firestoreSDK.getDoc(conversationRef);
-        if (!snapshot.exists()) throw new Error("This conversation no longer exists.");
-        const conversation = snapshot.data();
-        const uid = auth.currentUser?.uid;
-        const memberUids = conversation.memberUids || [];
-        const memberProfiles = Array.isArray(conversation.memberProfileIds) ? conversation.memberProfileIds : memberUids;
-        const profileId = identityId || uid;
-        const profileIndex = memberProfiles.indexOf(profileId);
-        if (!uid || profileIndex < 0) throw new Error("You are not a member of this conversation.");
-        if (memberProfiles.length <= 1) throw new Error("You are the last member. Delete the conversation instead.");
-        const nextProfiles = [...memberProfiles]; nextProfiles.splice(profileIndex, 1);
-        const nextNames = [...(conversation.memberNames || [])]; if (profileIndex < nextNames.length) nextNames.splice(profileIndex, 1);
-        const updates = { memberNames: nextNames, memberCount: nextProfiles.length, updatedAt: firestoreSDK.serverTimestamp() };
-        if (Array.isArray(conversation.memberProfileIds)) updates.memberProfileIds = nextProfiles;
-        else updates.memberUids = memberUids.filter((memberUid) => memberUid !== uid);
-        await firestoreSDK.updateDoc(conversationRef, updates);
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        await functionsSDK.httpsCallable(functions, "leaveConversation")({ conversationId, identityId });
       },
       deleteConversation: async (conversationId, identityId) => {
-        const conversationRef = firestoreSDK.doc(db, "conversations", conversationId);
-        const snapshot = await firestoreSDK.getDoc(conversationRef);
-        if (!snapshot.exists()) return;
-        const messagesRef = firestoreSDK.collection(conversationRef, "messages");
-        while (true) {
-          const page = await firestoreSDK.getDocs(firestoreSDK.query(messagesRef, firestoreSDK.limit(400)));
-          if (page.empty) break;
-          const batch = firestoreSDK.writeBatch(db);
-          await Promise.all(page.docs.map(async (messageDoc) => {
-            const path = messageDoc.data().attachmentPath;
-            if (typeof path === "string" && path.startsWith(`conversations/${conversationId}/`)) {
-              try { await storageSDK.deleteObject(storageSDK.ref(storage, path)); }
-              catch (error) { if (error.code !== "storage/object-not-found") throw error; }
-            }
-            batch.delete(messageDoc.ref);
-          }));
-          await batch.commit();
-        }
-        await firestoreSDK.deleteDoc(conversationRef);
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        await functionsSDK.httpsCallable(functions, "deleteConversation")({ conversationId, identityId });
       },
       addConversationMembers: async (conversationId, identityId, memberUids, suggestedNames = []) => {
-        const conversationRef = firestoreSDK.doc(db, "conversations", conversationId);
-        const snapshot = await firestoreSDK.getDoc(conversationRef);
-        if (!snapshot.exists()) throw new Error("This conversation no longer exists.");
-        const conversation = snapshot.data();
-        const oldUids = conversation.memberUids || [];
-        const currentProfiles = conversation.memberProfileIds || oldUids;
-        const additions = [...new Set(memberUids.map(String))].filter((uid) => uid && !oldUids.includes(uid) && !currentProfiles.includes(uid));
-        if (!additions.length) return;
-        if (oldUids.length + additions.length > 100) throw new Error("This conversation has reached its 100-member limit.");
-        const directory = await Promise.all(additions.map(async (uid, index) => {
-          const member = await firestoreSDK.getDoc(firestoreSDK.doc(db, "directory", uid));
-          if (!member.exists() || member.data().schoolId !== "ctla" || member.data().status !== "active") {
-            throw new Error("Only approved Called to Learn Academy accounts can be added.");
-          }
-          return member.data().displayName || suggestedNames[index] || "School member";
-        }));
-        const nextUids = [...oldUids, ...additions];
-        const nextNames = [...(conversation.memberNames || []), ...directory];
-        const nextProfiles = [...currentProfiles, ...additions];
-        await firestoreSDK.updateDoc(conversationRef, {
-          memberUids: nextUids, memberNames: nextNames, memberCount: nextProfiles.length,
-          memberProfileIds: nextProfiles,
-          kind: conversation.kind === "direct" && nextProfiles.length > 2 ? "group" : conversation.kind,
-          updatedAt: firestoreSDK.serverTimestamp()
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "addConversationMembers")({
+          conversationId, identityId, memberUids
         });
+        return result.data;
       },
       requestClassJoin: async (classId, user, className, identityId) => {
         const functionsSDK = await sdk("functions");
