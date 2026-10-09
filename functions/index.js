@@ -471,7 +471,7 @@ async function setFamilyMemberPin(uid, user, data) {
   const pin = String(data.pin || "");
   validateFamilyPinRequest(familyId, memberId);
   if (data.identityId !== uid || !["parent", "admin"].includes(String(user.role || "").toLowerCase())) {
-    throw new HttpsError("permission-denied", "Only the family account holder can set subaccount PINs.");
+    throw new HttpsError("permission-denied", "Only the family account holder can set family profile PINs.");
   }
   if (!/^\d{6}$/.test(pin)) throw new HttpsError("invalid-argument", "Choose a six-digit PIN.");
 
@@ -495,12 +495,18 @@ async function setFamilyMemberPin(uid, user, data) {
     const member = memberSnapshot.data();
     const profile = profileSnapshot.data();
     const currentUser = userSnapshot.data() || {};
+    const ownerProfile = memberId === uid;
+    const validOwner = ownerProfile && member.accountType === "owner"
+      && member.ownerUid === uid && profile.accountType !== "managed"
+      && profile.ownerUid === uid && profile.familyId === familyId;
+    const validManagedProfile = !ownerProfile && member.accountType === "managed"
+      && member.ownerUid === uid && profile.accountType === "managed"
+      && profile.ownerUid === uid && profile.managerUid === uid && profile.familyId === familyId;
     if (!userSnapshot.exists || currentUser.status !== "active" || currentUser.schoolId !== "ctla"
         || currentUser.activeMemberId !== uid || !["parent", "admin"].includes(String(currentUser.role || "").toLowerCase())
-        || member.accountType !== "managed" || member.status !== "active" || member.ownerUid !== uid
-        || profile.accountType !== "managed" || profile.status !== "active"
-        || profile.ownerUid !== uid || profile.managerUid !== uid || profile.familyId !== familyId) {
-      throw new HttpsError("permission-denied", "Only the family account holder can set this managed profile’s PIN.");
+        || member.status !== "active" || profile.status !== "active"
+        || (!validOwner && !validManagedProfile)) {
+      throw new HttpsError("permission-denied", "Only this family’s account holder can set that profile’s PIN.");
     }
     transaction.set(secretRef, {
       familyId, memberId, ownerUid: uid, salt: salt.toString("base64url"),
@@ -534,18 +540,25 @@ async function selectFamilyMemberWithPin(uid, user, data) {
     const currentUser = userSnapshot.data() || {};
     if (!familySnapshot.exists || familySnapshot.data().ownerUid !== uid
         || !memberSnapshot.exists || !profileSnapshot.exists || !secretSnapshot.exists) {
-      throw new HttpsError("failed-precondition", "This subaccount does not have a PIN yet. Ask the family account holder to set one.");
+      throw new HttpsError("failed-precondition", "This family profile does not have a PIN yet. Ask the family account holder to set one.");
     }
     const member = memberSnapshot.data();
     const profile = profileSnapshot.data();
     const secret = secretSnapshot.data();
+    const ownerProfile = memberId === uid;
+    const validOwner = ownerProfile && member.accountType === "owner"
+      && member.ownerUid === uid && profile.accountType !== "managed"
+      && profile.ownerUid === uid && profile.familyId === familyId;
+    const validManagedProfile = !ownerProfile && member.accountType === "managed"
+      && member.ownerUid === uid && profile.accountType === "managed"
+      && profile.ownerUid === uid && profile.managerUid === uid && profile.familyId === familyId;
     if (!userSnapshot.exists || currentUser.status !== "active" || currentUser.schoolId !== "ctla"
-        || currentUser.activeMemberId !== uid || !["parent", "admin"].includes(String(currentUser.role || user.role || "").toLowerCase())
-        || member.accountType !== "managed" || member.status !== "active" || member.ownerUid !== uid
-        || profile.accountType !== "managed" || profile.status !== "active"
-        || profile.ownerUid !== uid || profile.managerUid !== uid || profile.familyId !== familyId
+        || (!ownerProfile && currentUser.activeMemberId !== uid)
+        || !["parent", "admin"].includes(String(currentUser.role || user.role || "").toLowerCase())
+        || member.status !== "active" || profile.status !== "active"
+        || (!validOwner && !validManagedProfile)
         || secret.ownerUid !== uid || secret.familyId !== familyId || secret.memberId !== memberId) {
-      throw new HttpsError("permission-denied", "This profile is not managed by the signed-in family account.");
+      throw new HttpsError("permission-denied", "This profile is not part of the signed-in family account.");
     }
 
     const currentMillis = Date.now();

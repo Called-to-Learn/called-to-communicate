@@ -114,6 +114,7 @@ let authLoadForUid = null;
 let dataScopeRevision = 0;
 let familyLink = null;
 let activeFamilyId = null;
+let familyOwnerLocked = false;
 let promptAccountPickerAfterFamilyLoad = false;
 let directory = [];
 let remoteMode = false;
@@ -234,6 +235,7 @@ function header({ action = "new-message", title = "" } = {}) {
 }
 
 function render() {
+  if (familyOwnerLocked && state.page !== "family-owner-pin") state.page = "family-owner-pin";
   const app = $("#app");
   if (!app) return;
   document.body.classList.toggle("chat-open", state.page === "chat");
@@ -252,6 +254,7 @@ function render() {
   else if (state.page === "account") page = renderAccount();
   else if (state.page === "account-picker") page = renderAccountPicker();
   else if (state.page === "subaccount-pin") page = renderSubaccountPin();
+  else if (state.page === "family-owner-pin") page = renderFamilyOwnerPin();
   else if (state.page === "settings-detail") page = renderSettingsDetail();
   else if (state.page === "class-detail") page = renderClassDetail();
   else if (state.page === "event-detail") page = renderEventDetail();
@@ -261,8 +264,9 @@ function render() {
   else if (state.page === "create-announcement") page = renderCreateAnnouncement();
   else if (state.page === "edit-chat") page = renderEditChat();
   else page = renderHome();
-  const hideTabs = ["chat", "account-picker", "subaccount-pin"].includes(state.page);
-  app.innerHTML = `<div class="app-layout">${rail()}<main class="main-column">${page}</main></div>${hideTabs ? "" : tabBar()}`;
+  const hideTabs = ["chat", "account-picker", "subaccount-pin", "family-owner-pin"].includes(state.page);
+  const hideRail = ["account-picker", "subaccount-pin", "family-owner-pin"].includes(state.page);
+  app.innerHTML = `<div class="app-layout">${hideRail ? "" : rail()}<main class="main-column">${page}</main></div>${hideTabs ? "" : tabBar()}`;
   if (state.page === "chat") requestAnimationFrame(() => { const messages = $("#chat-messages"); if (messages) messages.scrollTop = messages.scrollHeight; });
 }
 
@@ -385,13 +389,13 @@ function renderFamily() {
     <div id="managed-member-pin-fields"><div class="form-field"><label for="member-pin">Six-digit PIN for this subaccount</label><input id="member-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="6-digit PIN"></div><div class="form-field"><label for="member-pin-confirm">Confirm PIN</label><input id="member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter it again"></div><span class="item-subtitle">Each managed profile needs its own PIN. Linked personal accounts use their existing sign-in.</span></div>
     <div style="display:flex;gap:8px"><button class="button primary" type="submit">Add or Invite</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : "";
   const pinFormMember = state.family.members.find((member) => member.id === state.pinManagementMemberId);
-  const pinManagementForm = canManageFamily && pinFormMember?.accountType === "managed" ? `<form id="family-pin-form" data-member-id="${esc(pinFormMember.id)}" class="card pin-form" style="padding:15px;margin:12px 0"><h3>${pinFormMember.pinConfigured ? "Change" : "Set"} ${esc(pinFormMember.name)}’s PIN</h3><p class="item-subtitle">Use a six-digit number. Five incorrect attempts temporarily lock PIN entry.</p><div class="form-field"><label for="family-pin">New six-digit PIN</label><input id="family-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="6-digit PIN"></div><div class="form-field"><label for="family-pin-confirm">Confirm PIN</label><input id="family-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter it again"></div><div class="pin-form-actions"><button class="button primary" type="submit">Save PIN</button><button class="button ghost" type="button" data-action="cancel-member-pin">Cancel</button></div></form>` : "";
+  const pinManagementForm = canManageFamily && ["managed", "owner"].includes(pinFormMember?.accountType) ? `<form id="family-pin-form" data-member-id="${esc(pinFormMember.id)}" class="card pin-form" style="padding:15px;margin:12px 0"><h3>${pinFormMember.accountType === "owner" ? "Family account holder" : esc(pinFormMember.name)} · ${pinFormMember.pinConfigured ? "Change" : "Set"} PIN</h3><p class="item-subtitle">Use a six-digit number. Five incorrect attempts temporarily lock PIN entry.</p><div class="form-field"><label for="family-pin">New six-digit PIN</label><input id="family-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="6-digit PIN"></div><div class="form-field"><label for="family-pin-confirm">Confirm PIN</label><input id="family-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter it again"></div><div class="pin-form-actions"><button class="button primary" type="submit">Save PIN</button><button class="button ghost" type="button" data-action="cancel-member-pin">Cancel</button></div></form>` : "";
   const memberRows = family.members.map((member) => `<div class="list-item">
       <button class="member-select family-member-row ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}" ${canSelectFamilyMember(member) ? "" : "disabled"}>
       <span class="avatar small ${esc(member.color || "purple")}">${esc(member.initials || member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join(""))}</span>
-      <span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="item-subtitle">${esc(roleDetail(member.role, member))} · ${member.accountType === "managed" ? `Shared family login · ${member.pinConfigured ? "PIN set" : "PIN needed"}` : member.accountType === "owner" ? "Account holder" : "Linked personal login"}</span>${member.tribe ? `<span class="item-subtitle">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span>
+      <span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="item-subtitle">${esc(roleDetail(member.role, member))} · ${member.accountType === "managed" ? `Shared family login · ${member.pinConfigured ? "PIN set" : "PIN needed"}` : member.accountType === "owner" ? `Account holder · ${member.pinConfigured ? "PIN protected" : "PIN needed"}` : "Linked personal login"}</span>${member.tribe ? `<span class="item-subtitle">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span>
     </button>
-    ${canManageFamily && member.accountType !== "owner" ? `<span class="family-member-actions">${member.accountType === "managed" ? `<button class="icon-button" aria-label="Edit ${esc(member.name)}" data-action="edit-member" data-id="${esc(member.id)}">${icon("compose")}</button><button class="button ghost" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button>` : ""}<button class="icon-button danger-text" aria-label="Unlink ${esc(member.name)}" data-action="remove-family-member" data-id="${esc(member.id)}">${icon("back")}</button></span>` : icon(state.activeMemberId === member.id ? "check" : "chevron", "row-chevron")}
+    ${canManageFamily && member.accountType === "owner" ? `<span class="family-member-actions"><button class="button ghost" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button></span>` : canManageFamily && member.accountType !== "owner" ? `<span class="family-member-actions">${member.accountType === "managed" ? `<button class="icon-button" aria-label="Edit ${esc(member.name)}" data-action="edit-member" data-id="${esc(member.id)}">${icon("compose")}</button><button class="button ghost" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button>` : ""}<button class="icon-button danger-text" aria-label="Unlink ${esc(member.name)}" data-action="remove-family-member" data-id="${esc(member.id)}">${icon("back")}</button></span>` : icon(state.activeMemberId === member.id ? "check" : "chevron", "row-chevron")}
   </div>`).join("");
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Manage family profiles and linked personal accounts.</p></div></div>
     <div class="family-summary card"><span class="item-icon" style="width:64px;height:64px;border-radius:50%">${icon("home")}</span><div class="family-copy"><h2>${esc(family.name)}</h2><p>${family.members.length} members · ${familyLink?.accountType === "linked" ? "linked personal account" : "family login"}</p></div>${canManageFamily ? `<button class="button ghost" data-action="edit-family">${icon("compose")}Edit Family</button>` : ""}</div>
@@ -409,7 +413,14 @@ function renderFamilySetup() {
 
 function renderAccountPicker() {
   const selectable = state.family.members.filter(canSelectFamilyMember);
-  return `<section class="page account-picker-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Who is using Called to Communicate?</h1><p class="page-subtitle">Choose a family profile. Each profile has its own role, classes, messages, calendar, and settings.</p></div></div><div class="card card-list">${selectable.map((member) => `<button class="member-select ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}">${avatar(member, "small")}<span class="member-copy"><b>${esc(member.name)}</b><span>${esc(roleDetail(member.role, member))}${member.accountType === "managed" ? ` · ${member.pinConfigured ? "PIN protected" : "PIN setup needed"}` : ""}</span></span>${icon(member.accountType === "managed" ? "shield" : "chevron")}</button>`).join("")}</div>${selectable.length === 1 ? `<button class="button primary wide" data-action="continue-account">Continue as ${esc(selectable[0].name)}</button>` : ""}<button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+  return `<section class="page account-picker-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Who is using Called to Communicate?</h1><p class="page-subtitle">Choose a family profile. Each profile has its own role, classes, messages, calendar, and settings.</p></div></div><div class="card card-list">${selectable.map((member) => `<button class="member-select ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}">${avatar(member, "small")}<span class="member-copy"><b>${esc(member.name)}</b><span>${esc(roleDetail(member.role, member))}${["managed", "owner"].includes(member.accountType) ? ` · ${member.pinConfigured ? "PIN protected" : "PIN setup needed"}` : ""}</span></span>${icon(["managed", "owner"].includes(member.accountType) ? "shield" : "chevron")}</button>`).join("")}</div>${selectable.length === 1 ? `<button class="button primary wide" data-action="continue-account">Continue as ${esc(selectable[0].name)}</button>` : ""}<button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+}
+
+function renderFamilyOwnerPin() {
+  const owner = state.family.members.find((entry) => entry.id === authUser?.uid && entry.accountType === "owner");
+  if (!owner) return `<section class="page account-picker-page pin-page">${brand()}<h1 class="page-title">Family account locked</h1><p class="page-subtitle">Loading the family account holder profile…</p><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+  if (!owner.pinConfigured) return `<section class="page account-picker-page pin-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Set a family holder PIN</h1><p class="page-subtitle">Set a six-digit PIN to protect ${esc(owner.name)}’s family account profile. You’ll enter it when opening this profile.</p></div></div><form id="family-owner-pin-setup-form" data-member-id="${esc(owner.id)}" class="card pin-form"><div class="form-field"><label for="owner-pin-new">Six-digit PIN</label><input id="owner-pin-new" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter six digits"></div><div class="form-field"><label for="owner-pin-confirm">Confirm PIN</label><input id="owner-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter it again"></div><button class="button primary wide" type="submit">Save PIN and continue</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+  return `<section class="page account-picker-page pin-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Enter ${esc(owner.name)}’s PIN</h1><p class="page-subtitle">Enter the six-digit family holder PIN to unlock this profile.</p></div></div><form id="family-owner-pin-form" data-member-id="${esc(owner.id)}" class="card pin-form pin-pad-card"><div class="pin-indicators" id="pin-indicators" role="status" aria-live="polite" aria-label="0 of 6 digits entered">${Array.from({ length: 6 }, (_, i) => `<span class="pin-indicator" data-pin-slot="${i}" aria-hidden="true"></span>`).join("")}</div><label class="pin-entry-label" for="subaccount-pin">Type your PIN or tap the numbers</label><input id="subaccount-pin" name="pin" class="pin-code-input" type="password" inputmode="none" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required placeholder="Six-digit PIN" aria-label="Six-digit PIN"><div class="number-pad" aria-label="PIN number pad">${[1,2,3,4,5,6,7,8,9].map((digit) => `<button class="number-pad-key" type="button" data-action="pin-key" data-value="${digit}" aria-label="${digit}">${digit}</button>`).join("")}<span class="number-pad-spacer" aria-hidden="true"></span><button class="number-pad-key" type="button" data-action="pin-key" data-value="0" aria-label="0">0</button><button class="number-pad-key number-pad-delete" type="button" data-action="pin-delete" aria-label="Delete last digit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 3 12l6 7h12V5H9Z"></path><path d="m13 9 5 6m0-6-5 6"></path></svg></button></div><button class="button primary wide pin-continue" type="submit" disabled>Unlock ${esc(owner.name)}’s profile</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
 }
 
 function renderSubaccountPin() {
@@ -620,6 +631,7 @@ function connectDataListeners(sessionRevision = authSessionRevision) {
   state.activeConversationId = null;
   state.classes = [];
   state.events = [];
+  if (!familyOwnerLocked) {
   identityProfileUnsubscribe = backend.subscribeIdentityProfile(identityId, (profile) => {
     if (!isCurrentScope()) return;
     if (!profile) return;
@@ -655,12 +667,13 @@ function connectDataListeners(sessionRevision = authSessionRevision) {
     directory = items;
     if (state.page === "new-message" || (state.page === "settings-detail" && state.settingsDetail === "admin")) render();
   }, (error) => { if (isCurrentScope()) showListenerError("School directory", error); });
+  }
   if (activeFamilyId) {
     familyUnsubscribe = backend.subscribeFamily(activeFamilyId, (family) => {
       if (!isCurrentScope()) return;
       if (family) {
         state.family = { ...state.family, name: family.name || "Family Account", tribe: family.tribe || "Lamanites" };
-        persist(); if (state.page === "family" || state.page === "account") render();
+        persist(); if (["family", "account", "family-owner-pin"].includes(state.page)) render();
       }
     }, (error) => { if (isCurrentScope()) showListenerError("Family account", error); });
     const canListFamilyMembers = familyLink?.accountType === "owner" && identityId === uid;
@@ -684,14 +697,17 @@ function connectDataListeners(sessionRevision = authSessionRevision) {
       }
       applyActiveMember();
       if (promptAccountPickerAfterFamilyLoad) {
-        promptAccountPickerAfterFamilyLoad = false;
-        if (familyLink?.accountType === "owner" && state.family.members.filter(canSelectFamilyMember).length > 1) state.page = "account-picker";
+        if (!familyOwnerLocked) {
+          promptAccountPickerAfterFamilyLoad = false;
+          if (familyLink?.accountType === "owner" && state.family.members.filter(canSelectFamilyMember).length > 1) state.page = "account-picker";
+        }
       }
-      persist(); if (["family", "account", "account-picker"].includes(state.page)) render();
+      if (familyOwnerLocked) state.page = "family-owner-pin";
+      persist(); if (["family", "account", "account-picker", "family-owner-pin"].includes(state.page)) render();
       }, (error) => { if (isCurrentScope()) showListenerError("Family members", error); });
     }
   }
-  if (canAdmin()) {
+  if (!familyOwnerLocked && canAdmin()) {
     pendingUsersUnsubscribe = backend.subscribePendingUsers((users) => {
       if (!isCurrentScope()) return;
       state.pendingUsers = users.filter((user) => user.schoolId === SCHOOL_ID);
@@ -720,6 +736,7 @@ async function handleAuthUser(user, revision = null, force = false) {
   userProfile = null;
   familyLink = null;
   activeFamilyId = null;
+  familyOwnerLocked = false;
   directory = [];
   promptAccountPickerAfterFamilyLoad = false;
   stopListeners();
@@ -768,6 +785,7 @@ async function handleAuthUser(user, revision = null, force = false) {
       }
       activeFamilyId = familyLink?.status === "active" ? familyLink.familyId : null;
       promptAccountPickerAfterFamilyLoad = familyLink?.accountType === "owner";
+      familyOwnerLocked = familyLink?.accountType === "owner";
       state.currentUser = {
         name: profile.displayName || user.displayName || "School member", email: user.email || "",
         role: titleRole(profile.role), color: "blue",
@@ -775,8 +793,9 @@ async function handleAuthUser(user, revision = null, force = false) {
       };
       state.notificationPrefs = { messages: true, announcements: true, events: true, ...(profile.notificationPrefs || {}) };
       state.activeMemberId = restoredIdentityId;
-      state.page = !familyLink && profile.requestedFamilyAccount === true && String(profile.role).toLowerCase() === "parent"
-        ? "family" : "home";
+      state.page = familyOwnerLocked ? "family-owner-pin"
+        : !familyLink && profile.requestedFamilyAccount === true && String(profile.role).toLowerCase() === "parent"
+          ? "family" : "home";
       authAccountReady = true;
       connectDataListeners(revision);
     }
@@ -950,6 +969,23 @@ async function handleClick(event) {
       if (member && !canSelectFamilyMember(member)) {
         showToast("This family profile uses a separate login or belongs to another account holder.");
       } else if (member) {
+        if (remoteMode && authUser && member.accountType === "owner" && member.id === authUser.uid) {
+          if (state.activeMemberId === authUser.uid && !familyOwnerLocked) {
+            localSwitchToMember(member);
+            state.page = "home";
+            persist(); render();
+            break;
+          }
+          familyOwnerLocked = true;
+          state.pendingPinMemberId = member.id;
+          state.page = "family-owner-pin";
+          stopListeners();
+          dataScopeRevision++;
+          state.conversations = []; state.messages = {}; state.activeConversationId = null;
+          state.classes = []; state.events = [];
+          render();
+          break;
+        }
         if (remoteMode && authUser && member.accountType === "managed") {
           if (!member.pinConfigured) {
             try {
@@ -1013,7 +1049,7 @@ async function handleClick(event) {
       break;
     case "manage-member-pin": {
       const member = state.family.members.find((entry) => entry.id === id);
-      if (member?.accountType === "managed" && familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid) {
+      if (["managed", "owner"].includes(member?.accountType) && familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid) {
         state.pinManagementMemberId = member.id;
         state.addingMember = false;
         state.page = "family";
@@ -1336,8 +1372,11 @@ async function handleSubmit(event) {
         familyLink = { familyId, memberId: authUser.uid, accountType: "owner", status: "active" };
         userProfile.activeMemberId = authUser.uid;
         userProfile.requestedFamilyAccount = false;
-        state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", accountType: "owner", color: "purple" }] };
-        connectDataListeners(); state.page = "family"; persist(); render(); showToast("Family account created.");
+        familyOwnerLocked = true;
+        promptAccountPickerAfterFamilyLoad = false;
+        state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", accountType: "owner", color: "purple", pinConfigured: false }] };
+        state.page = "family-owner-pin";
+        connectDataListeners(); persist(); render(); showToast("Family account created. Set a PIN for the account holder to continue.");
       } catch (error) { showFirebaseError("Create family account", error); }
     } else {
       state.family.name = name; state.family.tribe = tribe; state.page = "family"; persist(); render();
@@ -1352,8 +1391,50 @@ async function handleSubmit(event) {
       const member = state.family.members.find((entry) => entry.id === memberId);
       if (member) member.pinConfigured = true;
       state.pinManagementMemberId = null;
-      persist(); render(); showToast("Subaccount PIN saved.");
+      persist(); render(); showToast(member?.accountType === "owner" ? "Family account holder PIN saved." : "Subaccount PIN saved.");
     } catch (error) { showFirebaseError("Save subaccount PIN", error); }
+  } else if (form.id === "family-owner-pin-setup-form") {
+    const memberId = form.dataset.memberId;
+    const pin = String(data.get("pin") || "");
+    if (!/^\d{6}$/.test(pin)) { showToast("Enter a six-digit PIN."); return; }
+    if (pin !== String(data.get("confirmPin") || "")) { showToast("The PINs do not match."); return; }
+    try {
+      await backend.setFamilyMemberPin(activeFamilyId, memberId, pin);
+      await backend.selectFamilyMemberWithPin(activeFamilyId, memberId, pin);
+      const owner = state.family.members.find((entry) => entry.id === memberId);
+      if (!owner) throw new Error("The family account holder profile could not be loaded. Refresh and try again.");
+      owner.pinConfigured = true;
+      localSwitchToMember(owner);
+      if (userProfile) userProfile.activeMemberId = memberId;
+      familyOwnerLocked = false;
+      state.pendingPinMemberId = null;
+      promptAccountPickerAfterFamilyLoad = false;
+      state.page = state.family.members.filter(canSelectFamilyMember).length > 1 ? "account-picker" : "home";
+      connectDataListeners(); persist(); render();
+      showToast("Family account holder PIN saved.");
+    } catch (error) { showFirebaseError("Save family holder PIN", error); }
+  } else if (form.id === "family-owner-pin-form") {
+    const memberId = form.dataset.memberId;
+    const pin = String(data.get("pin") || "");
+    if (!/^\d{6}$/.test(pin)) { showToast("Enter all six digits on the number pad."); return; }
+    try {
+      await backend.selectFamilyMemberWithPin(activeFamilyId, memberId, pin);
+      const owner = state.family.members.find((entry) => entry.id === memberId);
+      if (!owner) throw new Error("The family account holder profile could not be loaded. Refresh and try again.");
+      localSwitchToMember(owner);
+      if (userProfile) userProfile.activeMemberId = memberId;
+      familyOwnerLocked = false;
+      state.pendingPinMemberId = null;
+      promptAccountPickerAfterFamilyLoad = false;
+      state.page = state.family.members.filter(canSelectFamilyMember).length > 1 ? "account-picker" : "home";
+      connectDataListeners(); persist(); render();
+      showToast(`Signed in as ${owner.name}.`);
+    } catch (error) {
+      showFirebaseError("Check family holder PIN", error);
+      const input = $("#subaccount-pin");
+      if (input) input.value = "";
+      updatePinPad();
+    }
   } else if (form.id === "subaccount-pin-form") {
     const memberId = form.dataset.memberId;
     const pin = String(data.get("pin") || "");

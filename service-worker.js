@@ -1,5 +1,5 @@
-const CACHE = "called-to-communicate-v35";
-const APP_FILES = ["./", "./index.html", "./styles.css?v=8", "./app.js?v=32", "./firebase.js?v=23", "./firebase-config.js?v=5", "./manifest.webmanifest", "./app-icon-v2.png", "./favicon-v2.png", "./brand-mark-v1.png"];
+const CACHE = "called-to-communicate-v36";
+const APP_FILES = ["./", "./index.html", "./styles.css?v=8", "./app.js?v=33", "./firebase.js?v=23", "./firebase-config.js?v=5", "./manifest.webmanifest", "./app-icon-v2.png", "./favicon-v2.png", "./brand-mark-v1.png"];
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP_FILES)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (event) => event.waitUntil(Promise.all([
   caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))),
