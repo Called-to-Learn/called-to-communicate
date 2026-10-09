@@ -24,12 +24,19 @@ async function getOwnedIdentityProfile(uid, identityId, user) {
     const profile = await db.doc(`profiles/${uid}`).get();
     return profile.exists ? profile.data() : { displayName: user.displayName };
   }
-  const snapshot = await db.doc(`profiles/${identityId}`).get();
+  const [snapshot, linkSnapshot] = await Promise.all([
+    db.doc(`profiles/${identityId}`).get(),
+    db.doc(`familyLinks/${uid}`).get()
+  ]);
   if (!snapshot.exists) throw new HttpsError("permission-denied", "This family profile is not available to your account.");
   const profile = snapshot.data();
   const isManaged = profile.accountType === "managed" && profile.managerUid === uid;
   const isIndependent = profile.accountType !== "managed";
-  if (profile.ownerUid !== uid || profile.status !== "active" || (!isManaged && !isIndependent)) {
+  const isLinked = linkSnapshot.exists
+    && linkSnapshot.data().status === "active"
+    && linkSnapshot.data().accountType === "linked"
+    && linkSnapshot.data().memberId === identityId;
+  if ((profile.ownerUid !== uid && !isLinked) || profile.status !== "active" || (!isManaged && !isIndependent)) {
     throw new HttpsError("permission-denied", "This family profile is not available to your account.");
   }
   return profile;
@@ -38,8 +45,11 @@ async function getOwnedIdentityProfile(uid, identityId, user) {
 async function getActiveIdentityProfile(uid, requestedIdentityId, user) {
   const linkSnapshot = await db.doc(`familyLinks/${uid}`).get();
   const linkedIdentityId = linkSnapshot.exists && linkSnapshot.data().status === "active"
+    && linkSnapshot.data().accountType === "linked"
     ? linkSnapshot.data().memberId : null;
-  const activeIdentityId = user.activeMemberId || linkedIdentityId || uid;
+  // Linked accounts resolve to the family profile consistently in the app and rules,
+  // even if an older activeMemberId value is still present on the user record.
+  const activeIdentityId = linkedIdentityId || user.activeMemberId || uid;
   if (requestedIdentityId && requestedIdentityId !== activeIdentityId) {
     throw new HttpsError("permission-denied", "Switch to this family profile before using it.");
   }

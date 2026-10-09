@@ -27,6 +27,15 @@ service cloud.firestore {
         && account().schoolId == 'ctla';
     }
 
+    function linkedProfile(profileId) {
+      let linkPath = /databases/$(database)/documents/familyLinks/$(request.auth.uid);
+      return activeUser()
+        && exists(linkPath)
+        && get(linkPath).data.status == 'active'
+        && get(linkPath).data.accountType == 'linked'
+        && get(linkPath).data.memberId == profileId;
+    }
+
     function selectedManagedProfile(profileId) {
       let path = profilePath(profileId);
       return activeUser()
@@ -44,7 +53,8 @@ service cloud.firestore {
         && (!account().keys().hasAny(['activeMemberId'])
           || !(account().activeMemberId is string)
           || account().activeMemberId == request.auth.uid
-          || selectedManagedProfile(account().activeMemberId));
+          || selectedManagedProfile(account().activeMemberId)
+          || linkedProfile(account().activeMemberId));
     }
 
     function familyMember(familyId) {
@@ -95,20 +105,21 @@ service cloud.firestore {
         && (profileId == request.auth.uid
           || (get(path).data.ownerUid == request.auth.uid
             && (get(path).data.accountType != 'managed'
-              || get(path).data.managerUid == request.auth.uid)));
+              || get(path).data.managerUid == request.auth.uid))
+          || linkedProfile(profileId));
     }
 
     function identityIdForUser() {
       let requestedProfile = hasAccount() && account().keys().hasAny(['activeMemberId'])
         ? account().activeMemberId : null;
       let familyLinkPath = /databases/$(database)/documents/familyLinks/$(request.auth.uid);
-      return requestedProfile is string
-          && ownedProfile(requestedProfile)
-        ? requestedProfile
-        : (exists(familyLinkPath)
+      return exists(familyLinkPath)
           && get(familyLinkPath).data.status == 'active'
+          && get(familyLinkPath).data.accountType == 'linked'
           && get(familyLinkPath).data.memberId is string
-          ? get(familyLinkPath).data.memberId
+        ? get(familyLinkPath).data.memberId
+        : (requestedProfile is string && ownedProfile(requestedProfile)
+          ? requestedProfile
           : request.auth.uid);
     }
 
@@ -118,7 +129,7 @@ service cloud.firestore {
         && (identityId == request.auth.uid
           ? account().role == role
           : (role in ['parent', 'student', 'teacher', 'presidency']
-            && selectedManagedProfile(identityId)
+            && canAccessProfile(identityId)
             && get(profilePath(identityId)).data.role == role));
     }
 
