@@ -88,8 +88,14 @@ service cloud.firestore {
     }
 
     function canAccessProfile(profileId) {
+      let path = profilePath(profileId);
       return activeUser()
-        && ownedProfile(profileId);
+        && exists(path)
+        && get(path).data.status == 'active'
+        && (profileId == request.auth.uid
+          || (get(path).data.ownerUid == request.auth.uid
+            && (get(path).data.accountType != 'managed'
+              || get(path).data.managerUid == request.auth.uid)));
     }
 
     function identityIdForUser() {
@@ -225,7 +231,7 @@ service cloud.firestore {
     }
 
     function canSendAsProfile(profileId) {
-      return ownedProfile(profileId);
+      return canAccessProfile(profileId);
     }
 
     function identityDisplayName(profileId) {
