@@ -405,6 +405,17 @@ service cloud.firestore {
             || (request.resource.data.displayName is string && request.resource.data.displayName.size() > 0 && request.resource.data.displayName.size() <= 100))
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['settings'])
             || validProfileSettings(request.resource.data.settings)))
+        || (signedIn()
+          && request.auth.uid == profileId
+          && exists(userPath(profileId))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid', 'accountType'])
+          && (!(resource.data.ownerUid is string) || resource.data.ownerUid == request.auth.uid)
+          && (!(resource.data.accountType is string) || resource.data.accountType != 'managed')
+          && request.resource.data.ownerUid == request.auth.uid
+          && request.resource.data.accountType is string
+          && request.resource.data.accountType != 'managed'
+          && (!(resource.data.accountType is string)
+            || request.resource.data.accountType == resource.data.accountType))
         || (activeUser()
           && request.auth.uid != profileId
           && resource.data.schoolId == 'ctla'

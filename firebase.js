@@ -176,11 +176,20 @@ export async function connectFirebase(onAuthChanged, onError) {
         if (familyLink?.accountType === "linked" && familyLink.memberId && familyLink.memberId !== uid) return;
         const ref = firestoreSDK.doc(db, "profiles", uid);
         const snapshot = await firestoreSDK.getDoc(ref);
-        if (!snapshot.exists()) await firestoreSDK.setDoc(ref, {
-          displayName: profile.displayName || auth.currentUser?.displayName || "School member",
-          role: profile.role || "student", accountType: "personal", ownerUid: uid,
-          schoolId: "ctla", status: profile.status || "active", settings: {}
-        });
+        if (!snapshot.exists()) {
+          await firestoreSDK.setDoc(ref, {
+            displayName: profile.displayName || auth.currentUser?.displayName || "School member",
+            role: profile.role || "student", accountType: "personal", ownerUid: uid,
+            schoolId: "ctla", status: profile.status || "active", settings: {}
+          });
+          return;
+        }
+        const existingProfile = snapshot.data();
+        if (existingProfile.accountType === "managed") return;
+        const repair = {};
+        if (typeof existingProfile.ownerUid !== "string") repair.ownerUid = uid;
+        if (typeof existingProfile.accountType !== "string") repair.accountType = "personal";
+        if (Object.keys(repair).length) await firestoreSDK.updateDoc(ref, repair);
       },
       sendMessage: async (conversationId, message) => {
         const conversationRef = firestoreSDK.doc(db, "conversations", conversationId);
