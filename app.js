@@ -164,13 +164,7 @@ const isSignedIn = () => remoteMode
 
 function brand(extra = "") {
   return `<div class="brand ${extra}" aria-label="Called to Communicate, Called to Learn Academy">
-    <svg class="brand-mark" viewBox="0 0 126 94" role="img" aria-hidden="true">
-      <g fill="none" stroke="currentColor" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M6 73c21-17 39-15 56-2 16-14 35-16 58 0M8 81c20-11 37-10 54 0 19-10 37-11 58 0M22 70c10-14 22-25 32-36 6-7 8-16 7-25-7 6-11 13-12 23M53 53c-4-16-4-29 1-42M65 69c-2-18 3-30 14-39 7-6 13-9 21-9-8 13-17 21-28 28M65 67c4-15 14-25 28-31"/>
-        <circle cx="61" cy="7" r="5" fill="currentColor"/><circle cx="75" cy="18" r="4.5" fill="currentColor"/>
-        <path d="M61 13c6 7 8 13 8 20M54 26c4 5 7 10 8 17"/>
-      </g>
-    </svg>
+    <img class="brand-mark" src="brand-mark-v1.png" alt="" aria-hidden="true">
     <span class="brand-name"><span class="called">CALLED TO</span><span class="communicate">COMMUNICATE</span><span class="school">Called to Learn</span></span>
   </div>`;
 }

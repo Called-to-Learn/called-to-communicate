@@ -36,7 +36,7 @@ a { color: inherit; }
 .page.compact { max-width: 860px; }
 .mobile-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: max(18px, env(safe-area-inset-top)) 0 15px; }
 .brand { display: flex; align-items: center; min-width: 0; color: #69268c; text-decoration: none; }
-.brand-mark { width: 72px; height: 58px; margin-right: 9px; flex: 0 0 auto; }
+.brand-mark { width: 72px; height: 58px; margin-right: 9px; flex: 0 0 auto; object-fit: contain; }
 .brand-name { display: flex; flex-direction: column; line-height: .96; white-space: nowrap; }
 .brand-name .called { font: 22px Georgia, "Times New Roman", serif; letter-spacing: .06em; border-bottom: 1px solid #8e6aa5; padding-bottom: 2px; }
 .brand-name .communicate { font: 27px Georgia, "Times New Roman", serif; letter-spacing: -.035em; }
