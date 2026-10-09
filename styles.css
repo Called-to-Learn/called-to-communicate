@@ -277,6 +277,10 @@ a { color: inherit; }
 .pin-indicator { width: 13px; height: 13px; border: 1.5px solid #aab5d0; border-radius: 50%; background: transparent; transition: .15s ease; }
 .pin-indicator.current { border-color: var(--purple); box-shadow: 0 0 0 4px #6938f51a; }
 .pin-indicator.filled { border-color: var(--purple); background: var(--purple); }
+.pin-entry-label { color: var(--muted); font-size: 13px; font-weight: 600; margin-bottom: -16px; text-align: center; }
+.pin-code-input { width: min(100%, 280px); height: 46px; border: 1px solid #e0e6f5; border-radius: 14px; background: #f8f9fe; color: var(--ink); text-align: center; font-size: 18px; letter-spacing: .35em; padding: 0 16px; outline: none; }
+.pin-code-input::placeholder { color: #9aa6c3; font-size: 14px; letter-spacing: normal; }
+.pin-code-input:focus { border-color: #9d82ff; box-shadow: 0 0 0 3px #6938f51a; }
 .number-pad { width: min(100%, 300px); display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 18px; }
 .number-pad-key { width: 68px; height: 68px; justify-self: center; border: 1px solid #e6eafa; border-radius: 50%; background: #f7f8fe; color: var(--ink); font-size: 27px; font-weight: 550; box-shadow: 0 3px 10px #53669b0e; -webkit-tap-highlight-color: transparent; transition: transform .1s ease, background .15s ease, border-color .15s ease; }
 .number-pad-key:active { transform: scale(.94); background: #eeebff; border-color: #c9bbff; }
