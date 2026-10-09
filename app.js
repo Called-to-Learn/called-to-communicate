@@ -1357,7 +1357,7 @@ async function handleSubmit(event) {
   } else if (form.id === "subaccount-pin-form") {
     const memberId = form.dataset.memberId;
     const pin = String(data.get("pin") || "");
-    if (!/^\\d{6}$/.test(pin)) { showToast("Enter all six digits on the number pad."); return; }
+    if (!/^\d{6}$/.test(pin)) { showToast("Enter all six digits on the number pad."); return; }
     try {
       await backend.selectFamilyMemberWithPin(activeFamilyId, memberId, pin);
       const member = state.family.members.find((entry) => entry.id === memberId);
@@ -1521,7 +1521,7 @@ document.addEventListener("change", (event) => {
 });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=27").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=28").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
