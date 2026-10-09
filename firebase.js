@@ -319,34 +319,13 @@ export async function connectFirebase(onAuthChanged, onError) {
         } catch { return null; }
       },
       createFamily: async (uid, family) => {
-        const userRef = firestoreSDK.doc(db, "users", uid);
-        const userSnapshot = await firestoreSDK.getDoc(userRef);
-        if (!userSnapshot.exists() || userSnapshot.data().status !== "active" || !["parent", "admin"].includes(userSnapshot.data().role)) {
-          throw new Error("An approved Parent or Admin account is required to create a family account.");
-        }
-        const familyRef = firestoreSDK.doc(firestoreSDK.collection(db, "families"));
-        const memberRef = firestoreSDK.doc(db, "families", familyRef.id, "members", uid);
-        const profileRef = firestoreSDK.doc(db, "profiles", uid);
-        const familyLinkRef = firestoreSDK.doc(db, "familyLinks", uid);
-        const now = firestoreSDK.serverTimestamp();
-        const profile = userSnapshot.data();
-        const batch = firestoreSDK.writeBatch(db);
-        batch.set(familyRef, {
-          name: family.name, tribe: family.tribe, ownerUid: uid, managerUids: [uid],
-          memberIds: [uid], memberUids: [uid], memberCount: 1, schoolId: "ctla", createdAt: now
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "createFamilyAccount")({
+          operation: "create-family", name: family.name, tribe: family.tribe,
+          ownerName: family.ownerName, identityId: uid
         });
-        batch.set(memberRef, {
-          familyId: familyRef.id, memberId: uid, uid, ownerUid: uid, linkedUid: uid,
-          accountType: "owner", status: "active", name: family.ownerName || profile.displayName || "Family Account Holder",
-          role: profile.role || "parent", grade: "", tribe: family.tribe, createdAt: now
-        });
-        batch.set(profileRef, {
-          displayName: family.ownerName || profile.displayName || "Family Account Holder", role: profile.role,
-          accountType: "personal", ownerUid: uid, familyId: familyRef.id, schoolId: "ctla", status: "active"
-        }, { merge: true });
-        batch.set(familyLinkRef, { familyId: familyRef.id, memberId: uid, accountType: "owner", ownerUid: uid, status: "active", updatedAt: now });
-        await batch.commit();
-        return familyRef.id;
+        return result.data.familyId;
       },
       setActiveMember: async (uid, memberId) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "users", uid), { activeMemberId: memberId }),
       updateFamily: async (familyId, updates) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "families", familyId), updates),

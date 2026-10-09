@@ -5,7 +5,15 @@ const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
 const { HttpsError, onCall } = require("firebase-functions/v2/https");
 
-initializeApp();
+let runtimeFirebaseConfig = {};
+try { runtimeFirebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG || "{}"); } catch {}
+const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT
+  || runtimeFirebaseConfig.projectId || "called-to-communicate-web";
+initializeApp({
+  ...runtimeFirebaseConfig,
+  projectId,
+  storageBucket: runtimeFirebaseConfig.storageBucket || `${projectId}.firebasestorage.app`
+});
 const auth = getAuth();
 const db = getFirestore();
 const storage = getStorage();
@@ -353,12 +361,110 @@ exports.setSchoolUserRole = onCall({ region: "us-central1", maxInstances: 10 }, 
   return { updated: true, userId, role };
 });
 
+async function createFamilyAccountRecord(uid, user, data) {
+  const identity = await getActiveIdentityProfile(uid, data.identityId || uid, user);
+  if (identity.identityId !== uid || !["parent", "admin"].includes(String(user.role || "").toLowerCase())) {
+    throw new HttpsError("permission-denied", "Only the active Parent or Admin account holder can create a family account.");
+  }
+
+  const name = String(data.name || "").trim();
+  const tribe = String(data.tribe || "Lamanites");
+  if (!name || name.length > 100 || !["Lamanites", "Nephites", "Jaredites", "Mulekites"].includes(tribe)) {
+    throw new HttpsError("invalid-argument", "Enter a family name and choose a valid tribe.");
+  }
+
+  const userRef = db.doc(`users/${uid}`);
+  const profileRef = db.doc(`profiles/${uid}`);
+  const linkRef = db.doc(`familyLinks/${uid}`);
+  const generatedFamilyRef = db.collection("families").doc();
+  const now = FieldValue.serverTimestamp();
+
+  return db.runTransaction(async (transaction) => {
+    const [userSnapshot, profileSnapshot, linkSnapshot] = await Promise.all([
+      transaction.get(userRef), transaction.get(profileRef), transaction.get(linkRef)
+    ]);
+    if (!userSnapshot.exists || userSnapshot.data().status !== "active"
+        || userSnapshot.data().schoolId !== "ctla"
+        || !["parent", "admin"].includes(String(userSnapshot.data().role || "").toLowerCase())) {
+      throw new HttpsError("permission-denied", "An active Parent or Admin account is required to create a family account.");
+    }
+
+    const currentUser = userSnapshot.data();
+    if (currentUser.activeMemberId && currentUser.activeMemberId !== uid) {
+      throw new HttpsError("failed-precondition", "Switch to the account holder profile before creating a family account.");
+    }
+    const currentProfile = profileSnapshot.exists ? profileSnapshot.data() : {};
+    if (currentProfile.accountType === "managed"
+        || (currentProfile.ownerUid && currentProfile.ownerUid !== uid)) {
+      throw new HttpsError("permission-denied", "A managed family profile cannot create a separate family account.");
+    }
+
+    const currentLink = linkSnapshot.exists ? linkSnapshot.data() : null;
+    if (currentLink?.accountType === "linked" && currentLink.status === "active") {
+      throw new HttpsError("failed-precondition", "This personal account is already linked to a family.");
+    }
+    const linkedFamilyId = currentLink?.accountType === "owner" && currentLink.ownerUid === uid
+      ? currentLink.familyId : null;
+    const profileFamilyId = typeof currentProfile.familyId === "string" ? currentProfile.familyId : null;
+    const existingFamilyId = linkedFamilyId || profileFamilyId;
+    const familyRef = existingFamilyId && !existingFamilyId.includes("/")
+      ? db.doc(`families/${existingFamilyId}`) : generatedFamilyRef;
+    const memberRef = db.doc(`families/${familyRef.id}/members/${uid}`);
+    const [familySnapshot, memberSnapshot] = await Promise.all([
+      transaction.get(familyRef), transaction.get(memberRef)
+    ]);
+
+    if (familySnapshot.exists && familySnapshot.data().ownerUid !== uid) {
+      throw new HttpsError("permission-denied", "This account is not the owner of its existing family.");
+    }
+    if (memberSnapshot.exists && (memberSnapshot.data().ownerUid !== uid
+        || memberSnapshot.data().accountType !== "owner")) {
+      throw new HttpsError("failed-precondition", "The account holder family profile is inconsistent. Contact school support.");
+    }
+
+    const displayName = String(currentUser.displayName || currentProfile.displayName || "Family Account Holder").trim();
+    const familyData = familySnapshot.exists ? familySnapshot.data() : null;
+    if (!familySnapshot.exists) {
+      transaction.create(familyRef, {
+        name, tribe, ownerUid: uid, managerUids: [uid], memberIds: [uid], memberUids: [uid],
+        memberCount: 1, schoolId: "ctla", createdAt: now
+      });
+    } else {
+      transaction.set(familyRef, {
+        managerUids: FieldValue.arrayUnion(uid), memberIds: FieldValue.arrayUnion(uid),
+        memberUids: FieldValue.arrayUnion(uid), updatedAt: now
+      }, { merge: true });
+    }
+    if (!memberSnapshot.exists) {
+      transaction.create(memberRef, {
+        familyId: familyRef.id, memberId: uid, uid, ownerUid: uid, linkedUid: uid,
+        accountType: "owner", status: "active", name: displayName,
+        role: String(currentUser.role || "parent").toLowerCase(), grade: "",
+        tribe: familyData?.tribe || tribe, createdAt: now
+      });
+    }
+    transaction.set(profileRef, {
+      displayName, role: String(currentUser.role || "parent").toLowerCase(),
+      accountType: "personal", ownerUid: uid, familyId: familyRef.id,
+      schoolId: "ctla", status: "active", updatedAt: now
+    }, { merge: true });
+    transaction.set(linkRef, {
+      familyId: familyRef.id, memberId: uid, accountType: "owner", ownerUid: uid,
+      status: "active", updatedAt: now
+    }, { merge: true });
+    return { familyId: familyRef.id, name: familyData?.name || name, tribe: familyData?.tribe || tribe };
+  });
+}
+
 // Reuse the existing callable name so Firebase updates its deployed invoker instead of creating
 // a new Cloud Run service that would need a fresh allUsers IAM grant.
 exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in before creating an independent family login.");
   const uid = request.auth.uid;
   const user = await requireActiveSchoolUser(uid);
+  if (request.data?.operation === "create-family") {
+    return createFamilyAccountRecord(uid, user, request.data);
+  }
   const { identityId: activeIdentityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   if (activeIdentityId !== uid) throw new HttpsError("permission-denied", "Switch to the family account holder profile to change family logins.");
   const familyId = String(request.data?.familyId || "");
