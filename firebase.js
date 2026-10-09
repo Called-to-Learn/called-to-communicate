@@ -23,8 +23,9 @@ export async function connectFirebase(onAuthChanged, onError) {
       signUp: (email, password, displayName, requestedRole) => signUp(email, password, displayName, requestedRole),
       signOut: () => authSDK.signOut(auth),
       subscribeConversations: (uid, identityId, next, error, includeLegacy = true) => {
-        const reportQueryError = (queryName) => (cause) => {
+        const reportQueryError = (queryName, { ignorePermissionDenied = false } = {}) => (cause) => {
           if (!error) return;
+          if (ignorePermissionDenied && cause?.code === "permission-denied") return;
           const labeled = new Error(`${queryName}: ${cause?.message || "Conversation query failed."}`);
           labeled.code = cause?.code;
           error(labeled);
@@ -57,7 +58,7 @@ export async function connectFirebase(onAuthChanged, onError) {
           );
           legacyUnsubscribe = firestoreSDK.onSnapshot(legacyQuery, (snapshot) => {
             legacyItems = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })).filter((item) => !Array.isArray(item.memberProfileIds)); emit();
-          }, reportQueryError("Legacy conversation query"));
+          }, reportQueryError("Legacy conversation query", { ignorePermissionDenied: true }));
         }
         return () => { identityUnsubscribe(); legacyUnsubscribe(); };
       },
