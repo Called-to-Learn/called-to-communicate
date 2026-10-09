@@ -1382,7 +1382,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=22").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=23").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
