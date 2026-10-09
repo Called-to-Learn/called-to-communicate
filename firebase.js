@@ -172,6 +172,10 @@ export async function connectFirebase(onAuthChanged, onError) {
         const snap = await firestoreSDK.getDoc(ref);
         return snap.exists() ? { id: snap.id, ...snap.data() } : null;
       },
+      getIdentityProfile: async (identityId) => {
+        const snap = await firestoreSDK.getDoc(firestoreSDK.doc(db, "profiles", identityId));
+        return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+      },
       ensureIdentityProfile: async (uid, profile, familyLink = null) => {
         if (familyLink?.accountType === "linked" && familyLink.memberId && familyLink.memberId !== uid) return;
         const ref = firestoreSDK.doc(db, "profiles", uid);

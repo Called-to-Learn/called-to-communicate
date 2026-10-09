@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=15";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=16";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -750,15 +750,24 @@ async function handleAuthUser(user, revision = null, force = false) {
       if (!familyLink && profile.familyId) familyLink = await backend.getOwnerFamilyLink(uid, profile.familyId);
       if (!isCurrentLoad()) return;
 
-      // A stale selected profile must never carry over into a new sign-in. Reset to
-      // the authenticated user's own identity before opening any private listeners.
-      if (profile.activeMemberId && profile.activeMemberId !== uid && familyLink?.accountType !== "linked") {
-        await backend.setActiveMember(uid, uid);
-        if (!isCurrentLoad()) return;
-        profile.activeMemberId = uid;
-      }
       await backend.ensureIdentityProfile(uid, profile, familyLink);
       if (!isCurrentLoad()) return;
+      let restoredIdentityId = familyLink?.accountType === "linked" ? (familyLink.memberId || uid) : uid;
+      if (familyLink?.accountType !== "linked" && profile.activeMemberId && profile.activeMemberId !== uid) {
+        const selectedProfile = await backend.getIdentityProfile(profile.activeMemberId);
+        if (!isCurrentLoad()) return;
+        const belongsToAccount = selectedProfile?.accountType === "managed"
+          && selectedProfile.ownerUid === uid
+          && selectedProfile.managerUid === uid
+          && selectedProfile.status === "active";
+        if (belongsToAccount) {
+          restoredIdentityId = profile.activeMemberId;
+        } else {
+          await backend.setActiveMember(uid, uid);
+          if (!isCurrentLoad()) return;
+          profile.activeMemberId = uid;
+        }
+      }
       activeFamilyId = familyLink?.status === "active" ? familyLink.familyId : null;
       promptAccountPickerAfterFamilyLoad = familyLink?.accountType === "owner";
       state.currentUser = {
@@ -767,7 +776,7 @@ async function handleAuthUser(user, revision = null, force = false) {
         initials: (profile.displayName || user.displayName || "CT").split(/\s+/).map((part) => part[0]).slice(0, 2).join("")
       };
       state.notificationPrefs = { messages: true, announcements: true, events: true, ...(profile.notificationPrefs || {}) };
-      state.activeMemberId = familyLink?.accountType === "linked" ? (familyLink.memberId || uid) : uid;
+      state.activeMemberId = restoredIdentityId;
       state.page = "home";
       authAccountReady = true;
       connectDataListeners(revision);
