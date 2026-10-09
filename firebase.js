@@ -23,6 +23,12 @@ export async function connectFirebase(onAuthChanged, onError) {
       signUp: (email, password, displayName, requestedRole) => signUp(email, password, displayName, requestedRole),
       signOut: () => authSDK.signOut(auth),
       subscribeConversations: (uid, identityId, next, error) => {
+        const reportQueryError = (queryName) => (cause) => {
+          if (!error) return;
+          const labeled = new Error(`${queryName}: ${cause?.message || "Conversation query failed."}`);
+          labeled.code = cause?.code;
+          error(labeled);
+        };
         let identityItems = [];
         let legacyItems = [];
         const emit = () => {
@@ -41,7 +47,7 @@ export async function connectFirebase(onAuthChanged, onError) {
         );
         const identityUnsubscribe = firestoreSDK.onSnapshot(identityQuery, (snapshot) => {
           identityItems = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })); emit();
-        }, error);
+        }, reportQueryError("Profile conversation query"));
         let legacyUnsubscribe = () => {};
         if (identityId === uid) {
           const legacyQuery = firestoreSDK.query(
@@ -51,7 +57,7 @@ export async function connectFirebase(onAuthChanged, onError) {
           );
           legacyUnsubscribe = firestoreSDK.onSnapshot(legacyQuery, (snapshot) => {
             legacyItems = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })).filter((item) => !Array.isArray(item.memberProfileIds)); emit();
-          }, error);
+          }, reportQueryError("Legacy conversation query"));
         }
         return () => { identityUnsubscribe(); legacyUnsubscribe(); };
       },
