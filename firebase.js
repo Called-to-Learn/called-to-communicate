@@ -22,7 +22,7 @@ export async function connectFirebase(onAuthChanged, onError) {
       resetPassword: (email) => authSDK.sendPasswordResetEmail(auth, email),
       signUp: (email, password, displayName, requestedRole) => signUp(email, password, displayName, requestedRole),
       signOut: () => authSDK.signOut(auth),
-      subscribeConversations: (uid, identityId, next, error) => {
+      subscribeConversations: (uid, identityId, next, error, includeLegacy = true) => {
         const reportQueryError = (queryName) => (cause) => {
           if (!error) return;
           const labeled = new Error(`${queryName}: ${cause?.message || "Conversation query failed."}`);
@@ -49,7 +49,7 @@ export async function connectFirebase(onAuthChanged, onError) {
           identityItems = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })); emit();
         }, reportQueryError("Profile conversation query"));
         let legacyUnsubscribe = () => {};
-        if (identityId === uid) {
+        if (identityId === uid && includeLegacy) {
           const legacyQuery = firestoreSDK.query(
             firestoreSDK.collection(db, "conversations"),
             firestoreSDK.where("schoolId", "==", "ctla"),

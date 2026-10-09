@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=12";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=13";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -622,6 +622,7 @@ function connectDataListeners(sessionRevision = authSessionRevision) {
     state.notificationPrefs = { messages: true, announcements: true, events: true, ...accountPrefs, ...memberPrefs };
     if (state.page === "settings-detail" && state.settingsDetail === "notifications") render();
   }, (error) => { if (isCurrentScope()) showListenerError("Profile settings", error); });
+  const allowLegacyConversationLookup = !familyLink && !userProfile?.familyId;
   conversationUnsubscribe = backend.subscribeConversations(uid, identityId, (items) => {
     if (!isCurrentScope()) return;
     state.conversations = items.map((item) => ({
@@ -632,7 +633,7 @@ function connectDataListeners(sessionRevision = authSessionRevision) {
       color: item.color || "purple", members: item.memberNames || []
     }));
     persist(); if (state.page !== "chat") render();
-  }, (error) => { if (isCurrentScope()) showListenerError("Conversation list", error); });
+  }, (error) => { if (isCurrentScope()) showListenerError("Conversation list", error); }, allowLegacyConversationLookup);
   classesUnsubscribe = backend.subscribeClasses(SCHOOL_ID, (items) => {
     if (!isCurrentScope()) return;
     state.classes = items.map((item) => ({ ...item, joined: Array.isArray(item.memberProfileIds) ? item.memberProfileIds.includes(identityId) : item.memberUids?.includes(uid) || false, color: item.color || "purple", note: item.description || "Class updates and resources" }));
@@ -1356,7 +1357,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=17").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=18").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
