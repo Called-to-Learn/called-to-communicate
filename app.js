@@ -415,7 +415,7 @@ function renderAccountPicker() {
 function renderSubaccountPin() {
   const member = state.family.members.find((entry) => entry.id === state.pendingPinMemberId && entry.accountType === "managed");
   if (!member) return `<section class="page account-picker-page">${brand()}<h1 class="page-title">Subaccount unavailable</h1><button class="button primary wide" data-action="back-to-account-picker">Back to profiles</button></section>`;
-  return `<section class="page account-picker-page">${brand()}<button class="back-link" data-action="back-to-account-picker">${icon("back")} All profiles</button><div class="page-title-row"><div><h1 class="page-title">Enter ${esc(member.name)}’s PIN</h1><p class="page-subtitle">Enter their six-digit PIN to open this profile.</p></div></div><form id="subaccount-pin-form" data-member-id="${esc(member.id)}" class="card pin-form"><div class="form-field"><label for="subaccount-pin">Six-digit PIN</label><input id="subaccount-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required autofocus placeholder="Enter PIN"></div><button class="button primary wide" type="submit">Continue as ${esc(member.name)}</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+  return `<section class="page account-picker-page pin-page">${brand()}<button class="back-link" data-action="back-to-account-picker">${icon("back")} All profiles</button><div class="page-title-row"><div><h1 class="page-title">Enter ${esc(member.name)}’s PIN</h1><p class="page-subtitle">Enter their six-digit PIN to open this profile.</p></div></div><form id="subaccount-pin-form" data-member-id="${esc(member.id)}" class="card pin-form pin-pad-card"><input id="subaccount-pin" name="pin" type="hidden" value=""><div class="pin-indicators" id="pin-indicators" role="status" aria-live="polite" aria-label="0 of 6 digits entered">${Array.from({ length: 6 }, (_, i) => `<span class="pin-indicator" data-pin-slot="${i}" aria-hidden="true"></span>`).join("")}</div><div class="number-pad" aria-label="PIN number pad">${[1,2,3,4,5,6,7,8,9].map((digit) => `<button class="number-pad-key" type="button" data-action="pin-key" data-value="${digit}" aria-label="${digit}">${digit}</button>`).join("")}<span class="number-pad-spacer" aria-hidden="true"></span><button class="number-pad-key" type="button" data-action="pin-key" data-value="0" aria-label="0">0</button><button class="number-pad-key number-pad-delete" type="button" data-action="pin-delete" aria-label="Delete last digit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 3 12l6 7h12V5H9Z"></path><path d="m13 9 5 6m0-6-5 6"></path></svg></button></div><button class="button primary wide pin-continue" type="submit" disabled>Continue as ${esc(member.name)}</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
 }
 
 function renderAccount() {
@@ -915,6 +915,20 @@ async function handleClick(event) {
   const { action, id, tab, filter, key, role, date, value } = target.dataset;
   if (target.tagName.toLowerCase() === "button" && target.type === "submit" && target.form) return;
   switch (action) {
+    case "pin-key": {
+      const input = $("#subaccount-pin");
+      if (!input || input.value.length >= 6 || !/^\\d$/.test(value || "")) break;
+      input.value += value;
+      updatePinPad();
+      break;
+    }
+    case "pin-delete": {
+      const input = $("#subaccount-pin");
+      if (!input) break;
+      input.value = input.value.slice(0, -1);
+      updatePinPad();
+      break;
+    }
     case "tab": setTab(tab); break;
     case "filter": state.filter = filter; state.search = ""; persist(); render(); break;
     case "calendar-filter": state.calendarFilter = filter; render(); break;
@@ -1198,6 +1212,20 @@ async function handleClick(event) {
   }
 }
 
+function updatePinPad() {
+  const input = $("#subaccount-pin");
+  const indicators = $("#pin-indicators");
+  if (!input || !indicators) return;
+  const count = input.value.length;
+  indicators.setAttribute("aria-label", `${count} of 6 digits entered`);
+  $$("[data-pin-slot]", indicators).forEach((slot, index) => {
+    slot.classList.toggle("filled", index < count);
+    slot.classList.toggle("current", index === count && count < 6);
+  });
+  const submit = $(".pin-continue");
+  if (submit) submit.disabled = count !== 6;
+}
+
 function handleInput(event) {
   const target = event.target;
   if (target.id === "message-search") {
@@ -1324,6 +1352,7 @@ async function handleSubmit(event) {
   } else if (form.id === "subaccount-pin-form") {
     const memberId = form.dataset.memberId;
     const pin = String(data.get("pin") || "");
+    if (!/^\\d{6}$/.test(pin)) { showToast("Enter all six digits on the number pad."); return; }
     try {
       await backend.selectFamilyMemberWithPin(activeFamilyId, memberId, pin);
       const member = state.family.members.find((entry) => entry.id === memberId);
@@ -1333,7 +1362,12 @@ async function handleSubmit(event) {
       state.pendingPinMemberId = null;
       connectDataListeners(); state.page = "home"; persist(); render();
       showToast(`Signed in as ${member.name}.`);
-    } catch (error) { showFirebaseError("Check subaccount PIN", error); }
+    } catch (error) {
+      showFirebaseError("Check subaccount PIN", error);
+      const input = $("#subaccount-pin");
+      if (input) input.value = "";
+      updatePinPad();
+    }
   } else if (form.id === "family-link-form") {
     const code = String(data.get("code") || "").trim();
     if (!backend?.enabled || !authUser) { showToast("Sign in to your existing personal account before linking it."); return; }
@@ -1482,7 +1516,7 @@ document.addEventListener("change", (event) => {
 });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=25").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=26").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;

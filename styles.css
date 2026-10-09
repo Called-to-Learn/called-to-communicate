@@ -266,10 +266,33 @@ a { color: inherit; }
 .pin-form h3 { margin: 0; }
 .pin-form-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .account-picker-page .pin-form { max-width: 480px; }
+.pin-page { align-items: center; }
+.pin-page > .brand, .pin-page > .back-link, .pin-page > .page-title-row, .pin-page > .pin-pad-card, .pin-page > .button.ghost { width: 100%; max-width: 390px; }
+.pin-page > .brand { align-self: flex-start; }
+.pin-page > .back-link { align-self: flex-start; }
+.pin-page > .page-title-row { align-items: center; margin-top: 20px; }
+.pin-page .page-title-row > div { width: 100%; text-align: center; }
+.pin-pad-card { display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 24px 20px 20px; margin: 0 0 12px; }
+.pin-indicators { display: flex; justify-content: center; gap: 15px; min-height: 18px; }
+.pin-indicator { width: 13px; height: 13px; border: 1.5px solid #aab5d0; border-radius: 50%; background: transparent; transition: .15s ease; }
+.pin-indicator.current { border-color: var(--purple); box-shadow: 0 0 0 4px #6938f51a; }
+.pin-indicator.filled { border-color: var(--purple); background: var(--purple); }
+.number-pad { width: min(100%, 300px); display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 18px; }
+.number-pad-key { width: 68px; height: 68px; justify-self: center; border: 1px solid #e6eafa; border-radius: 50%; background: #f7f8fe; color: var(--ink); font-size: 27px; font-weight: 550; box-shadow: 0 3px 10px #53669b0e; -webkit-tap-highlight-color: transparent; transition: transform .1s ease, background .15s ease, border-color .15s ease; }
+.number-pad-key:active { transform: scale(.94); background: #eeebff; border-color: #c9bbff; }
+.number-pad-key:focus-visible { outline: 3px solid #9c80ff; outline-offset: 2px; }
+.number-pad-spacer { width: 68px; height: 68px; }
+.number-pad-delete { display: grid; place-items: center; border-color: transparent; background: transparent; box-shadow: none; }
+.number-pad-delete svg { width: 25px; height: 25px; fill: none; stroke: #69799f; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.number-pad-delete:active { background: #eeebff; }
+.pin-continue { margin-top: 1px; }
 
 @media (max-width: 560px) {
   .family-member-actions { flex-wrap: wrap; justify-content: flex-end; }
   .family-member-actions .button { padding: 0 9px; font-size: 12px; }
+  .pin-pad-card { gap: 18px; padding: 20px 16px 16px; }
+  .number-pad { gap: 10px 12px; }
+  .number-pad-key, .number-pad-spacer { width: 62px; height: 62px; }
 }
 
 @media (min-width: 760px) {
