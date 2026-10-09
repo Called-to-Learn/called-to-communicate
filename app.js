@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=19";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=21";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1106,12 +1106,16 @@ async function handleClick(event) {
       break;
     case "delete-chat":
       if (confirm(`Delete “${activeConversation().title}” for all members? This cannot be undone.`)) {
+        let deletionResult = null;
         if (backend?.enabled && authUser) {
-          try { await backend.deleteConversation(state.activeConversationId, activeIdentityId()); }
+          try { deletionResult = await backend.deleteConversation(state.activeConversationId, activeIdentityId()); }
           catch (error) { showFirebaseError("Delete chat", error); break; }
         } else { state.conversations = state.conversations.filter((entry) => entry.id !== state.activeConversationId); delete state.messages[state.activeConversationId]; }
         state.pinnedConversationIds = state.pinnedConversationIds.filter((conversationId) => conversationId !== state.activeConversationId);
-        state.page = "home"; state.activeTab = "messages"; persist(); render(); showToast("Conversation deleted.");
+        state.page = "home"; state.activeTab = "messages"; persist(); render();
+        showToast(deletionResult?.attachmentsDeleted === false
+          ? "Chat deleted. Some attachments need administrator cleanup."
+          : "Conversation deleted.");
       }
       break;
     case "leave-chat":

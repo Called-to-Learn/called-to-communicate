@@ -479,11 +479,32 @@ exports.deleteConversation = onCall({ region: "us-central1", maxInstances: 10 },
   if (conversation.schoolId !== "ctla" || (!isCreator && !isSchoolAdmin)) {
     throw new HttpsError("permission-denied", "Only the conversation creator, Presidency, or Admin can delete this conversation.");
   }
-  await Promise.all([
-    db.recursiveDelete(conversationRef),
-    storage.bucket().deleteFiles({ prefix: `conversations/${conversationId}/` })
-  ]);
-  return { success: true };
+  let attachmentsDeleted = true;
+  try {
+    await storage.bucket().deleteFiles({ prefix: `conversations/${conversationId}/` });
+  } catch (error) {
+    // A Storage IAM failure must not leave the conversation and its messages
+    // half-deleted. The parent document's removal also blocks rule-based access
+    // to any remaining objects; log cleanup failures for an admin to resolve.
+    attachmentsDeleted = false;
+    console.error("Conversation attachment cleanup failed", {
+      conversationId,
+      code: error?.code,
+      message: error?.message
+    });
+  }
+
+  try {
+    await db.recursiveDelete(conversationRef);
+  } catch (error) {
+    console.error("Conversation Firestore deletion failed", {
+      conversationId,
+      code: error?.code,
+      message: error?.message
+    });
+    throw new HttpsError("internal", "The chat could not be deleted from Firestore. Check the deleteConversation function logs for the database permission error.");
+  }
+  return { success: true, attachmentsDeleted };
 });
 
 exports.addConversationMembers = onCall({ region: "us-central1", maxInstances: 10 }, async (request) => {

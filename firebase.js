@@ -11,7 +11,14 @@ export async function connectFirebase(onAuthChanged, onError) {
     ]);
     const app = appSDK.initializeApp(firebaseConfig);
     const auth = authSDK.getAuth(app);
-    const db = firestoreSDK.getFirestore(app);
+    // Safari and all iOS browsers can interrupt Firestore's streaming transport
+    // in the background. Long polling keeps live chat snapshots reliable there.
+    const userAgent = navigator.userAgent || "";
+    const isIOS = /iPad|iPhone|iPod/.test(userAgent) || (/Macintosh/.test(userAgent) && navigator.maxTouchPoints > 1);
+    const isSafari = /Safari/.test(userAgent) && !/(Chrome|Chromium|CriOS|FxiOS|Edg|OPR|Brave)/.test(userAgent);
+    const db = firestoreSDK.initializeFirestore(app, (isIOS || isSafari)
+      ? { experimentalForceLongPolling: true }
+      : {});
     const storage = storageSDK.getStorage(app);
     await authSDK.setPersistence(auth, authSDK.browserLocalPersistence);
 
@@ -239,7 +246,8 @@ export async function connectFirebase(onAuthChanged, onError) {
       deleteConversation: async (conversationId, identityId) => {
         const functionsSDK = await sdk("functions");
         const functions = functionsSDK.getFunctions(app, "us-central1");
-        await functionsSDK.httpsCallable(functions, "deleteConversation")({ conversationId, identityId });
+        const result = await functionsSDK.httpsCallable(functions, "deleteConversation")({ conversationId, identityId });
+        return result.data;
       },
       addConversationMembers: async (conversationId, identityId, memberUids, suggestedNames = []) => {
         const functionsSDK = await sdk("functions");
