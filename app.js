@@ -196,12 +196,13 @@ function showToast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => node.classList.remove("show"), 2600);
 }
-function showListenerError(source, error) {
-  console.error(`[Firestore] ${source}`, error);
+function showFirebaseError(source, error) {
+  console.error(`[Firebase] ${source}`, error);
   const code = String(error?.code || "").replace(/^firestore\//, "");
   const detail = code || error?.message || "Unknown error";
   showToast(`${source}: ${detail}`);
 }
+function showListenerError(source, error) { showFirebaseError(`${source} read`, error); }
 function roleDetail(role, item = {}) {
   if (item.note) return `${role} · ${item.note}`;
   if (item.tribe) return `${role} · ${item.tribe}`;
@@ -718,7 +719,7 @@ async function submitMessage(form) {
   input.value = "";
   if (backend?.enabled && authUser) {
     try { await backend.sendMessage(conversation.id, message); }
-    catch (error) { showToast(error.message || "Message could not be sent."); input.value = text; }
+    catch (error) { showFirebaseError("Send message", error); input.value = text; }
   } else {
     (state.messages[conversation.id] ||= []).push(message);
     conversation.preview = text; conversation.time = "Now";
@@ -758,7 +759,7 @@ async function createConversation() {
       state.addingToConversationId = null;
       openChat(conversationId);
       showToast(`${people.length} ${people.length === 1 ? "member" : "members"} added.`);
-    } catch (error) { showToast(error.message || "Could not add members."); }
+    } catch (error) { showFirebaseError("Add chat members", error); }
     return;
   }
   const names = people.map((person) => person.name);
@@ -788,7 +789,7 @@ async function createConversation() {
     if (!backend?.enabled) { state.conversations.unshift({ ...conversation, id: conversation.id, unread: 0, time: "Now" }); state.messages[conversation.id] = []; persist(); }
     state.selectedPersonIds = [];
     openChat(conversation.id);
-  } catch (error) { showToast(error.message || "Could not create chat."); }
+  } catch (error) { showFirebaseError("Create chat", error); }
 }
 
 function setTab(tab) { state.activeTab = tab; state.page = "home"; state.search = ""; state.filter = "All"; persist(); render(); }
@@ -835,7 +836,7 @@ async function handleClick(event) {
         localSwitchToMember(member);
         if (remoteMode && authUser) {
           try { await backend.setActiveMember(authUser.uid, member.id); }
-          catch (error) { showToast(error.message || "Profile selection could not be saved."); break; }
+          catch (error) { showFirebaseError("Switch account", error); break; }
           userProfile.activeMemberId = member.id;
           connectDataListeners();
         }
@@ -854,7 +855,7 @@ async function handleClick(event) {
       const role = select?.value || "student";
       if (backend?.enabled && canAdmin()) {
         try { await backend.approveUser(id, role); showToast(`Account approved as ${titleRole(role)}.`); }
-        catch (error) { showToast(error.message || "Account could not be approved."); }
+        catch (error) { showFirebaseError("Approve account", error); }
       }
       break;
     }
@@ -865,7 +866,7 @@ async function handleClick(event) {
       try {
         await backend.setUserRole(id, select.value);
         showToast(`Role updated to ${titleRole(select.value)}.`);
-      } catch (error) { showToast(error.message || "Role could not be changed."); }
+      } catch (error) { showFirebaseError("Change user role", error); }
       break;
     }
     case "class-detail": openClassDetail(id); break;
@@ -890,7 +891,7 @@ async function handleClick(event) {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a"); link.href = url; link.download = target.dataset.name || "attachment"; link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-      } catch (error) { showToast(error.message || "Attachment could not be downloaded."); }
+      } catch (error) { showFirebaseError("Download attachment", error); }
       break;
     }
     case "add-member": state.addingMember = true; render(); break;
@@ -900,7 +901,7 @@ async function handleClick(event) {
       if (name?.trim()) {
         if (backend?.enabled && activeFamilyId) {
           try { await backend.updateFamily(activeFamilyId, { name: name.trim() }); }
-          catch (error) { showToast(error.message || "Family name could not be saved."); break; }
+          catch (error) { showFirebaseError("Save family name", error); break; }
         }
         state.family.name = name.trim(); persist(); render();
       }
@@ -922,7 +923,7 @@ async function handleClick(event) {
             if (backend?.enabled && activeFamilyId) await backend.updateFamilyMember(activeFamilyId, id, updates);
             Object.assign(member, updates, { note: updates.grade ?? member.note });
             persist(); render(); showToast("Family profile updated.");
-          } catch (error) { showToast(error.message || "Family profile could not be updated."); }
+          } catch (error) { showFirebaseError("Update family profile", error); }
         }
       }
       break;
@@ -943,7 +944,7 @@ async function handleClick(event) {
         userProfile.activeMemberId = authUser.uid;
         applyActiveMember(); connectDataListeners();
         state.page = "family"; persist(); render();
-      } catch (error) { showToast(error.message || "Independent login could not be created."); }
+      } catch (error) { showFirebaseError("Create independent login", error); }
       break;
     }
     case "remove-family-member": {
@@ -959,7 +960,7 @@ async function handleClick(event) {
           connectDataListeners();
         }
         persist(); render(); showToast(`${member.name} was unlinked. Their account and data were kept.`);
-      } catch (error) { showToast(error.message || "Family member could not be unlinked."); }
+      } catch (error) { showFirebaseError("Unlink family member", error); }
       break;
     }
     case "join-class": state.showJoinable = !state.showJoinable; state.search = ""; state.page = "home"; state.activeTab = "classes"; render(); break;
@@ -973,7 +974,7 @@ async function handleClick(event) {
           if (result.joined) { item.joined = true; state.joinedRequests = state.joinedRequests.filter((classId) => classId !== id); showToast(`You joined ${item.name}.`); }
           else { state.joinedRequests = [...new Set([...state.joinedRequests, id])]; showToast("Join request sent to your teacher."); }
         }
-        catch (error) { showToast(error.message || "Could not request to join."); }
+        catch (error) { showFirebaseError("Join class", error); }
       } else { item.joined = true; item.members++; persist(); showToast(`You joined ${item.name}.`); }
       render(); break;
     }
@@ -983,7 +984,7 @@ async function handleClick(event) {
         const approved = target.dataset.approve === "true";
         await backend.respondToClassJoin(state.activeClassId, target.dataset.userId, approved);
         showToast(approved ? "Student added to the class." : "Enrollment request declined.");
-      } catch (error) { showToast(error.message || "Could not review this request."); }
+      } catch (error) { showFirebaseError("Review class request", error); }
       break;
     }
     case "demo-signin": state.isDemoSignedIn = true; state.currentUser = { name: "Emma Smith", email: "emma.smith@example.com", role: "Student", color: "blue", initials: "ES" }; state.activeMemberId = "emma-smith"; state.page = "home"; persist(); render(); break;
@@ -995,7 +996,7 @@ async function handleClick(event) {
       if (confirm(`Delete “${activeConversation().title}” for all members? This cannot be undone.`)) {
         if (backend?.enabled && authUser) {
           try { await backend.deleteConversation(state.activeConversationId, activeIdentityId()); }
-          catch (error) { showToast(error.message || "Conversation could not be deleted."); break; }
+          catch (error) { showFirebaseError("Delete chat", error); break; }
         } else { state.conversations = state.conversations.filter((entry) => entry.id !== state.activeConversationId); delete state.messages[state.activeConversationId]; }
         state.pinnedConversationIds = state.pinnedConversationIds.filter((conversationId) => conversationId !== state.activeConversationId);
         state.page = "home"; state.activeTab = "messages"; persist(); render(); showToast("Conversation deleted.");
@@ -1004,7 +1005,7 @@ async function handleClick(event) {
     case "leave-chat":
       if (backend?.enabled && authUser) {
         try { await backend.leaveConversation(state.activeConversationId, activeIdentityId()); }
-        catch (error) { showToast(error.message || "Could not leave this conversation."); break; }
+        catch (error) { showFirebaseError("Leave chat", error); break; }
       } else state.conversations = state.conversations.filter((entry) => entry.id !== state.activeConversationId);
       state.pinnedConversationIds = state.pinnedConversationIds.filter((conversationId) => conversationId !== state.activeConversationId);
       state.page = "home"; state.activeTab = "messages"; persist(); render(); showToast("You left this chat."); break;
@@ -1081,7 +1082,7 @@ async function handleSubmit(event) {
           } else {
             await backend.updateProfile(authUser.uid, { displayName: name });
           }
-        } catch (error) { showToast(error.message || "Profile could not be saved."); return; }
+        } catch (error) { showFirebaseError("Save profile", error); return; }
       }
       state.currentUser.name = name;
       state.currentUser.initials = name.split(/\s+/).map((part) => part[0]).slice(0,2).join("");
@@ -1105,7 +1106,7 @@ async function handleSubmit(event) {
           catch { prompt(`Send this invitation code to ${name} (${email}):`, invitation.code); }
         } else showToast(`${name}’s managed subaccount was added.`);
         persist(); render(); return;
-      } catch (error) { showToast(error.message || "Family member could not be added."); return; }
+      } catch (error) { showFirebaseError("Add family member", error); return; }
     }
     state.family.members.push({ id: `member-${Date.now()}`, name, role, note: grade, tribe, accountType: "managed", color: colorClasses[(state.family.members.length % (colorClasses.length - 1)) + 1] }); state.addingMember = false; persist(); render(); showToast(`${name} added to your family.`);
   } else if (form.id === "family-create-form") {
@@ -1121,7 +1122,7 @@ async function handleSubmit(event) {
         userProfile.activeMemberId = authUser.uid;
         state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", accountType: "owner", color: "purple" }] };
         connectDataListeners(); state.page = "family"; persist(); render(); showToast("Family account created.");
-      } catch (error) { showToast(error.message || "Family account could not be created."); }
+      } catch (error) { showFirebaseError("Create family account", error); }
     } else {
       state.family.name = name; state.family.tribe = tribe; state.page = "family"; persist(); render();
     }
@@ -1135,21 +1136,21 @@ async function handleSubmit(event) {
       state.activeMemberId = linked.memberId;
       userProfile.activeMemberId = linked.memberId;
       connectDataListeners(); state.page = "family"; render(); showToast("Your existing account is now linked to the family.");
-    } catch (error) { showToast(error.message || "This account could not be linked."); }
+    } catch (error) { showFirebaseError("Link account to family", error); }
   } else if (form.id === "event-form") {
     const eventRecord = { id: `event-${Date.now()}`, title: String(data.get("title") || "").trim(), date: String(data.get("date") || todayKey), time: new Date(`2000-01-01T${data.get("time")}`).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), kind: String(data.get("kind") || "event"), detail: String(data.get("detail") || "").trim(), link: String(data.get("link") || "").trim(), color: "purple" };
     try {
       if (backend?.enabled && authUser) await backend.createEvent(eventRecord);
       else { state.events.push(eventRecord); persist(); }
       state.selectedDate = eventRecord.date; state.activeTab = "calendar"; state.page = "home"; render(); showToast("School event saved.");
-    } catch (error) { showToast(error.message || "Event could not be saved."); }
+    } catch (error) { showFirebaseError("Save school event", error); }
   } else if (form.id === "personal-event-form") {
     const eventRecord = { title: String(data.get("title") || "").trim(), date: String(data.get("date") || todayKey), time: new Date(`2000-01-01T${data.get("time")}`).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), kind: String(data.get("kind") || "event"), detail: String(data.get("detail") || "").trim(), link: "", color: "purple" };
     try {
       if (backend?.enabled && authUser) await backend.createPersonalEvent(activeIdentityId(), eventRecord);
       else { state.events.push({ ...eventRecord, id: `personal-${Date.now()}`, calendarScope: "personal" }); persist(); }
       state.selectedDate = eventRecord.date; state.activeTab = "calendar"; state.page = "home"; render(); showToast("Added to this profile’s calendar.");
-    } catch (error) { showToast(error.message || "Personal calendar item could not be saved."); }
+    } catch (error) { showFirebaseError("Save personal event", error); }
   } else if (form.id === "class-form") {
     const classRecord = {
       name: String(data.get("name") || "").trim(), title: String(data.get("name") || "").trim(),
@@ -1160,7 +1161,7 @@ async function handleSubmit(event) {
       if (backend?.enabled && authUser) classRecord.id = await backend.createClass(classRecord);
       else { classRecord.id = `class-${Date.now()}`; state.classes.unshift(classRecord); persist(); }
       state.showJoinable = false; state.activeTab = "classes"; state.page = "home"; render(); showToast("Class created.");
-    } catch (error) { showToast(error.message || "Class could not be created."); }
+    } catch (error) { showFirebaseError("Create class", error); }
   } else if (form.id === "announcement-form") {
     const title = String(data.get("title") || "").trim();
     const text = String(data.get("text") || "").trim();
@@ -1181,13 +1182,13 @@ async function handleSubmit(event) {
         state.conversations.unshift(conversation); state.messages[conversation.id] = [{ sender: state.currentUser.name, senderName: state.currentUser.name, senderUid: "demo", text, time: "Now", mine: true }]; persist();
       }
       state.activeTab = "messages"; state.page = "home"; state.filter = "Announcements"; render(); showToast("Announcement published.");
-    } catch (error) { showToast(error.message || "Announcement could not be published."); }
+    } catch (error) { showFirebaseError("Publish announcement", error); }
   } else if (form.id === "edit-chat-form") {
     const conversation = activeConversation();
     const updates = { title: String(data.get("title") || "").trim(), description: String(data.get("description") || "").trim() };
     if (backend?.enabled && authUser) {
       try { await backend.updateConversation(conversation.id, updates); }
-      catch (error) { showToast(error.message || "Chat settings could not be saved."); return; }
+      catch (error) { showFirebaseError("Save chat settings", error); return; }
     }
     conversation.title = updates.title;
     conversation.description = updates.description;
@@ -1213,13 +1214,13 @@ async function handleFileChange(event) {
   let attachment = { name: file.name, size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`, type: file.type, url: "" };
   if (backend?.enabled && authUser) {
     try { attachment = { ...attachment, ...(await backend.uploadAttachment(conversation.id, authUser.uid, file)) }; }
-    catch (error) { showToast(error.message || "File upload failed."); event.target.value = ""; return; }
+    catch (error) { showFirebaseError("Upload attachment", error); event.target.value = ""; return; }
   }
   const senderName = state.currentUser.name;
   const message = { senderName, senderUid: authUser?.uid || "demo", senderProfileId: activeIdentityId(), sender: senderName, senderInitials: state.currentUser.initials, text: "", mine: true, time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), attachmentName: attachment.name, attachmentSize: attachment.size, attachmentType: attachment.type, attachmentUrl: attachment.url, attachmentPath: attachment.path };
   if (backend?.enabled && authUser) {
     try { await backend.sendMessage(conversation.id, message); }
-    catch (error) { showToast(error.message || "Attachment message could not be sent."); }
+    catch (error) { showFirebaseError("Send attachment", error); }
   } else {
     (state.messages[conversation.id] ||= []).push(message);
     conversation.preview = `Attachment: ${attachment.name}`; conversation.time = "Now"; persist(); render();
@@ -1245,7 +1246,7 @@ async function handlePreference(event) {
     try {
       if (activeIdentityId() === authUser.uid) userProfile.notificationPrefs = { ...state.notificationPrefs };
       await backend.updateIdentitySettings(activeIdentityId(), state.notificationPrefs);
-    } catch (error) { showToast(error.message || "Notification preference could not be saved."); }
+    } catch (error) { showFirebaseError("Save notification preference", error); }
   }
 }
 
@@ -1255,7 +1256,7 @@ document.addEventListener("submit", (event) => { handleSubmit(event).catch((erro
 document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=14").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=15").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
