@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=22";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=23";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -90,7 +90,8 @@ function seedState() {
     currentUser: { name: "Emma Smith", email: "emma.smith@example.com", role: "Student", color: "blue", initials: "ES" },
     activeMemberId: "emma-smith", isDemoSignedIn: false, pinChat: false, notifications: true,
     notificationPrefs: { messages: true, announcements: true, events: true }, joinedRequests: [], pendingUsers: [], pinnedConversationIds: [],
-    addingMember: false, addingToConversationId: null, classJoinRequests: [], showJoinable: false, newMessageFilter: "All", settingsDetail: "", authMode: "signin", error: ""
+    addingMember: false, addingToConversationId: null, pinManagementMemberId: null, pendingPinMemberId: null,
+    classJoinRequests: [], showJoinable: false, newMessageFilter: "All", settingsDetail: "", authMode: "signin", error: ""
   };
 }
 
@@ -250,6 +251,7 @@ function render() {
   else if (state.page === "family") page = renderFamily();
   else if (state.page === "account") page = renderAccount();
   else if (state.page === "account-picker") page = renderAccountPicker();
+  else if (state.page === "subaccount-pin") page = renderSubaccountPin();
   else if (state.page === "settings-detail") page = renderSettingsDetail();
   else if (state.page === "class-detail") page = renderClassDetail();
   else if (state.page === "event-detail") page = renderEventDetail();
@@ -259,7 +261,7 @@ function render() {
   else if (state.page === "create-announcement") page = renderCreateAnnouncement();
   else if (state.page === "edit-chat") page = renderEditChat();
   else page = renderHome();
-  const hideTabs = ["chat", "account-picker"].includes(state.page);
+  const hideTabs = ["chat", "account-picker", "subaccount-pin"].includes(state.page);
   app.innerHTML = `<div class="app-layout">${rail()}<main class="main-column">${page}</main></div>${hideTabs ? "" : tabBar()}`;
   if (state.page === "chat") requestAnimationFrame(() => { const messages = $("#chat-messages"); if (messages) messages.scrollTop = messages.scrollHeight; });
 }
@@ -273,6 +275,7 @@ function renderAuth() {
       <div class="form-field"><label for="auth-email">School email</label><input id="auth-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
       <div class="form-field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" autocomplete="${creating ? "new-password" : "current-password"}" minlength="6" required placeholder="At least 6 characters"></div>
       ${creating ? `<div class="form-field"><label for="requested-role">Request a role</label><select id="requested-role" name="requestedRole">${roles.map((role) => `<option>${role}</option>`).join("")}</select><span class="item-subtitle">Your selected role stays pending until approved. Only an existing Admin can approve an Admin request.</span></div>` : ""}
+      ${creating ? `<div id="signup-family-choice" class="signup-family-choice"><label><input id="create-family-account" name="createFamilyAccount" type="checkbox" value="yes"> <span>Would you like to create a family account?</span></label><span class="item-subtitle">We’ll open family setup after your Parent role is approved.</span></div>` : ""}
       <button class="button primary wide" type="submit" ${isBusy ? "disabled" : ""}>${isBusy ? "Please wait…" : creating ? "Create account" : "Sign In"}</button>
     </form>
     ${creating ? "" : `<button class="auth-switch mt-12" data-action="reset-password">Forgot password?</button>`}
@@ -379,17 +382,20 @@ function renderFamily() {
     <div class="form-field"><label for="member-role">Role</label><select id="member-role" name="role">${familyRoles.map((role) => `<option>${role}</option>`).join("")}</select><span class="item-subtitle">Linked accounts keep their verified school role. Staff tools require a separate school-approved login.</span></div>
     <div class="form-field"><label for="member-grade">Grade (optional)</label><input id="member-grade" name="grade" placeholder="e.g. Grade 6"></div>
     <div class="form-field"><label for="member-tribe">Tribe</label><select id="member-tribe" name="tribe"><option>Lamanites</option><option>Nephites</option><option>Jaredites</option><option>Mulekites</option></select></div>
+    <div id="managed-member-pin-fields"><div class="form-field"><label for="member-pin">Six-digit PIN for this subaccount</label><input id="member-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="6-digit PIN"></div><div class="form-field"><label for="member-pin-confirm">Confirm PIN</label><input id="member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter it again"></div><span class="item-subtitle">Each managed profile needs its own PIN. Linked personal accounts use their existing sign-in.</span></div>
     <div style="display:flex;gap:8px"><button class="button primary" type="submit">Add or Invite</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : "";
+  const pinFormMember = state.family.members.find((member) => member.id === state.pinManagementMemberId);
+  const pinManagementForm = canManageFamily && pinFormMember?.accountType === "managed" ? `<form id="family-pin-form" data-member-id="${esc(pinFormMember.id)}" class="card pin-form" style="padding:15px;margin:12px 0"><h3>${pinFormMember.pinConfigured ? "Change" : "Set"} ${esc(pinFormMember.name)}’s PIN</h3><p class="item-subtitle">Use a six-digit number. Five incorrect attempts temporarily lock PIN entry.</p><div class="form-field"><label for="family-pin">New six-digit PIN</label><input id="family-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="6-digit PIN"></div><div class="form-field"><label for="family-pin-confirm">Confirm PIN</label><input id="family-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="new-password" required placeholder="Enter it again"></div><div class="pin-form-actions"><button class="button primary" type="submit">Save PIN</button><button class="button ghost" type="button" data-action="cancel-member-pin">Cancel</button></div></form>` : "";
   const memberRows = family.members.map((member) => `<div class="list-item">
       <button class="member-select family-member-row ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}" ${canSelectFamilyMember(member) ? "" : "disabled"}>
       <span class="avatar small ${esc(member.color || "purple")}">${esc(member.initials || member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join(""))}</span>
-      <span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="item-subtitle">${esc(roleDetail(member.role, member))} · ${member.accountType === "managed" ? "Shared family login" : member.accountType === "owner" ? "Account holder" : "Linked personal login"}</span>${member.tribe ? `<span class="item-subtitle">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span>
+      <span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="item-subtitle">${esc(roleDetail(member.role, member))} · ${member.accountType === "managed" ? `Shared family login · ${member.pinConfigured ? "PIN set" : "PIN needed"}` : member.accountType === "owner" ? "Account holder" : "Linked personal login"}</span>${member.tribe ? `<span class="item-subtitle">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span>
     </button>
-    ${canManageFamily && member.accountType !== "owner" ? `<span class="family-member-actions">${member.accountType === "managed" ? `<button class="icon-button" aria-label="Edit ${esc(member.name)}" data-action="edit-member" data-id="${esc(member.id)}">${icon("compose")}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button>` : ""}<button class="icon-button danger-text" aria-label="Unlink ${esc(member.name)}" data-action="remove-family-member" data-id="${esc(member.id)}">${icon("back")}</button></span>` : icon(state.activeMemberId === member.id ? "check" : "chevron", "row-chevron")}
+    ${canManageFamily && member.accountType !== "owner" ? `<span class="family-member-actions">${member.accountType === "managed" ? `<button class="icon-button" aria-label="Edit ${esc(member.name)}" data-action="edit-member" data-id="${esc(member.id)}">${icon("compose")}</button><button class="button ghost" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button>` : ""}<button class="icon-button danger-text" aria-label="Unlink ${esc(member.name)}" data-action="remove-family-member" data-id="${esc(member.id)}">${icon("back")}</button></span>` : icon(state.activeMemberId === member.id ? "check" : "chevron", "row-chevron")}
   </div>`).join("");
   return `<section class="page">${header({ action: "account" })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Manage family profiles and linked personal accounts.</p></div></div>
     <div class="family-summary card"><span class="item-icon" style="width:64px;height:64px;border-radius:50%">${icon("home")}</span><div class="family-copy"><h2>${esc(family.name)}</h2><p>${family.members.length} members · ${familyLink?.accountType === "linked" ? "linked personal account" : "family login"}</p></div>${canManageFamily ? `<button class="button ghost" data-action="edit-family">${icon("compose")}Edit Family</button>` : ""}</div>
-    <div class="section-heading"><h2>Family Members</h2>${canManageFamily ? `<button class="button" data-action="add-member">${icon("plus")}Add Family Member</button>` : ""}</div>${memberForm}
+    <div class="section-heading"><h2>Family Members</h2>${canManageFamily ? `<button class="button" data-action="add-member">${icon("plus")}Add Family Member</button>` : ""}</div>${memberForm}${pinManagementForm}
     <div class="card card-list">${memberRows || `<div class="empty-state">No family members have been added yet.</div>`}</div>
     ${canManageFamily ? `<div class="notice-card mt-12"><strong>About family accounts</strong>Managed profiles share the family login and keep their own roles, classes, messages, calendars, and settings. Linked members keep their own Firebase login and school profile.</div>` : `<div class="notice-card mt-12"><strong>Linked personal account</strong>Your login and school profile remain independent. Family membership does not grant access to your private chats or settings.</div>`}</section>`;
 }
@@ -403,7 +409,13 @@ function renderFamilySetup() {
 
 function renderAccountPicker() {
   const selectable = state.family.members.filter(canSelectFamilyMember);
-  return `<section class="page account-picker-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Who is using Called to Communicate?</h1><p class="page-subtitle">Choose a family profile. Each profile has its own role, classes, messages, calendar, and settings.</p></div></div><div class="card card-list">${selectable.map((member) => `<button class="member-select ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}">${avatar(member, "small")}<span class="member-copy"><b>${esc(member.name)}</b><span>${esc(roleDetail(member.role, member))}</span></span>${icon("chevron")}</button>`).join("")}</div>${selectable.length === 1 ? `<button class="button primary wide" data-action="continue-account">Continue as ${esc(selectable[0].name)}</button>` : ""}<button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+  return `<section class="page account-picker-page">${brand()}<div class="page-title-row"><div><h1 class="page-title">Who is using Called to Communicate?</h1><p class="page-subtitle">Choose a family profile. Each profile has its own role, classes, messages, calendar, and settings.</p></div></div><div class="card card-list">${selectable.map((member) => `<button class="member-select ${state.activeMemberId === member.id ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}">${avatar(member, "small")}<span class="member-copy"><b>${esc(member.name)}</b><span>${esc(roleDetail(member.role, member))}${member.accountType === "managed" ? ` · ${member.pinConfigured ? "PIN protected" : "PIN setup needed"}` : ""}</span></span>${icon(member.accountType === "managed" ? "shield" : "chevron")}</button>`).join("")}</div>${selectable.length === 1 ? `<button class="button primary wide" data-action="continue-account">Continue as ${esc(selectable[0].name)}</button>` : ""}<button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
+}
+
+function renderSubaccountPin() {
+  const member = state.family.members.find((entry) => entry.id === state.pendingPinMemberId && entry.accountType === "managed");
+  if (!member) return `<section class="page account-picker-page">${brand()}<h1 class="page-title">Subaccount unavailable</h1><button class="button primary wide" data-action="back-to-account-picker">Back to profiles</button></section>`;
+  return `<section class="page account-picker-page">${brand()}<button class="back-link" data-action="back-to-account-picker">${icon("back")} All profiles</button><div class="page-title-row"><div><h1 class="page-title">Enter ${esc(member.name)}’s PIN</h1><p class="page-subtitle">Enter their six-digit PIN to open this profile.</p></div></div><form id="subaccount-pin-form" data-member-id="${esc(member.id)}" class="card pin-form"><div class="form-field"><label for="subaccount-pin">Six-digit PIN</label><input id="subaccount-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required autofocus placeholder="Enter PIN"></div><button class="button primary wide" type="submit">Continue as ${esc(member.name)}</button></form><button class="button ghost wide" data-action="sign-out">Sign out</button></section>`;
 }
 
 function renderAccount() {
@@ -747,20 +759,12 @@ async function handleAuthUser(user, revision = null, force = false) {
       await backend.ensureIdentityProfile(uid, profile, familyLink);
       if (!isCurrentLoad()) return;
       let restoredIdentityId = familyLink?.accountType === "linked" ? (familyLink.memberId || uid) : uid;
-      if (familyLink?.accountType !== "linked" && profile.activeMemberId && profile.activeMemberId !== uid) {
-        const selectedProfile = await backend.getIdentityProfile(profile.activeMemberId);
+      if (familyLink?.accountType !== "linked" && profile.activeMemberId !== uid) {
+        // A family login always returns to the account holder. Managed profiles must
+        // enter their PIN again after a fresh sign-in or page reload.
+        await backend.setActiveMember(uid, uid);
         if (!isCurrentLoad()) return;
-        const belongsToAccount = selectedProfile?.accountType === "managed"
-          && selectedProfile.ownerUid === uid
-          && selectedProfile.managerUid === uid
-          && selectedProfile.status === "active";
-        if (belongsToAccount) {
-          restoredIdentityId = profile.activeMemberId;
-        } else {
-          await backend.setActiveMember(uid, uid);
-          if (!isCurrentLoad()) return;
-          profile.activeMemberId = uid;
-        }
+        profile.activeMemberId = uid;
       }
       activeFamilyId = familyLink?.status === "active" ? familyLink.familyId : null;
       promptAccountPickerAfterFamilyLoad = familyLink?.accountType === "owner";
@@ -771,7 +775,8 @@ async function handleAuthUser(user, revision = null, force = false) {
       };
       state.notificationPrefs = { messages: true, announcements: true, events: true, ...(profile.notificationPrefs || {}) };
       state.activeMemberId = restoredIdentityId;
-      state.page = "home";
+      state.page = !familyLink && profile.requestedFamilyAccount === true && String(profile.role).toLowerCase() === "parent"
+        ? "family" : "home";
       authAccountReady = true;
       connectDataListeners(revision);
     }
@@ -929,6 +934,38 @@ async function handleClick(event) {
       if (member && !canSelectFamilyMember(member)) {
         showToast("This family profile uses a separate login or belongs to another account holder.");
       } else if (member) {
+        if (remoteMode && authUser && member.accountType === "managed") {
+          if (!member.pinConfigured) {
+            try {
+              if (state.activeMemberId !== authUser.uid) {
+                const owner = state.family.members.find((entry) => entry.id === authUser.uid);
+                await backend.setActiveMember(authUser.uid, authUser.uid);
+                userProfile.activeMemberId = authUser.uid;
+                if (owner) localSwitchToMember(owner);
+                connectDataListeners();
+              }
+              state.pinManagementMemberId = member.id;
+              state.page = "family";
+              render();
+              showToast(`Set a PIN for ${member.name} before using this profile.`);
+            } catch (error) { showFirebaseError("Open family profile", error); }
+            break;
+          }
+          try {
+            if (state.activeMemberId !== authUser.uid) {
+              const owner = state.family.members.find((entry) => entry.id === authUser.uid);
+              await backend.setActiveMember(authUser.uid, authUser.uid);
+              userProfile.activeMemberId = authUser.uid;
+              if (owner) localSwitchToMember(owner);
+              connectDataListeners();
+            }
+          } catch (error) { showFirebaseError("Open family profile", error); break; }
+          state.pendingPinMemberId = member.id;
+          state.page = "subaccount-pin";
+          render();
+          requestAnimationFrame(() => $("#subaccount-pin")?.focus());
+          break;
+        }
         localSwitchToMember(member);
         if (remoteMode && authUser) {
           try { await backend.setActiveMember(authUser.uid, member.id); }
@@ -941,6 +978,7 @@ async function handleClick(event) {
       break;
     }
     case "continue-account": state.page = "home"; persist(); render(); break;
+    case "back-to-account-picker": state.pendingPinMemberId = null; state.page = "account-picker"; render(); break;
     case "switch-role":
       if (!remoteMode && roles.includes(role)) { state.currentUser.role = role; persist(); render(); showToast(`Previewing ${role} view`); }
       break;
@@ -955,6 +993,18 @@ async function handleClick(event) {
       }
       render();
       break;
+    case "manage-member-pin": {
+      const member = state.family.members.find((entry) => entry.id === id);
+      if (member?.accountType === "managed" && familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid) {
+        state.pinManagementMemberId = member.id;
+        state.addingMember = false;
+        state.page = "family";
+        render();
+        requestAnimationFrame(() => $("#family-pin")?.focus());
+      }
+      break;
+    }
+    case "cancel-member-pin": state.pinManagementMemberId = null; render(); break;
     case "approve-user": {
       const select = $(`#approve-role-${CSS.escape(id)}`);
       const role = select?.value || "student";
@@ -1182,7 +1232,7 @@ async function handleSubmit(event) {
     try {
       if (!backend?.enabled) throw new Error("Connect the school Firebase project first, or use Preview the app.");
       const credential = state.authMode === "signup"
-        ? await backend.signUp(email, password, String(data.get("displayName") || "").trim(), String(data.get("requestedRole") || "Student").toLowerCase())
+        ? await backend.signUp(email, password, String(data.get("displayName") || "").trim(), String(data.get("requestedRole") || "Student").toLowerCase(), String(data.get("requestedRole") || "").toLowerCase() === "parent" && data.get("createFamilyAccount") === "yes")
         : await backend.signIn(email, password);
       if (credential?.user) await handleAuthUser(credential.user, null, state.authMode === "signup");
     } catch (error) { state.error = authMessage(error); }
@@ -1214,6 +1264,9 @@ async function handleSubmit(event) {
     const grade = String(data.get("grade") || "").trim();
     const tribe = String(data.get("tribe") || "");
     const accountType = String(data.get("accountType") || "managed");
+    const pin = String(data.get("pin") || "");
+    if (accountType === "managed" && !/^\d{6}$/.test(pin)) { showToast("Choose a six-digit PIN for this subaccount."); return; }
+    if (accountType === "managed" && pin !== String(data.get("confirmPin") || "")) { showToast("The PINs do not match."); return; }
     if (backend?.enabled && authUser && activeFamilyId) {
       const email = String(data.get("email") || "").trim();
       if (accountType === "linked" && !email) { showToast("Enter the email address for the existing personal account."); return; }
@@ -1223,7 +1276,17 @@ async function handleSubmit(event) {
         if (invitation?.code) {
           try { await navigator.clipboard.writeText(invitation.code); showToast(`Invitation code copied. Send it to ${name}; they must sign in with ${email}.`); }
           catch { prompt(`Send this invitation code to ${name} (${email}):`, invitation.code); }
-        } else showToast(`${name}’s managed subaccount was added.`);
+        } else {
+          try {
+            await backend.setFamilyMemberPin(activeFamilyId, invitation.memberId, pin);
+            const addedMember = state.family.members.find((entry) => entry.id === invitation.memberId);
+            if (addedMember) addedMember.pinConfigured = true;
+            showToast(`${name}’s subaccount was added with a PIN.`);
+          } catch (error) {
+            showFirebaseError("Save subaccount PIN", error);
+            showToast(`${name} was added, but the PIN could not be saved. Use Set PIN in Family Members before switching to this profile.`);
+          }
+        }
         persist(); render(); return;
       } catch (error) { showFirebaseError("Add family member", error); return; }
     }
@@ -1239,12 +1302,38 @@ async function handleSubmit(event) {
         activeFamilyId = familyId;
         familyLink = { familyId, memberId: authUser.uid, accountType: "owner", status: "active" };
         userProfile.activeMemberId = authUser.uid;
+        userProfile.requestedFamilyAccount = false;
         state.family = { name, tribe, members: [{ id: authUser.uid, uid: authUser.uid, email: authUser.email, name: state.currentUser.name, role: "Parent", note: "Account Holder", accountType: "owner", color: "purple" }] };
         connectDataListeners(); state.page = "family"; persist(); render(); showToast("Family account created.");
       } catch (error) { showFirebaseError("Create family account", error); }
     } else {
       state.family.name = name; state.family.tribe = tribe; state.page = "family"; persist(); render();
     }
+  } else if (form.id === "family-pin-form") {
+    const memberId = form.dataset.memberId;
+    const pin = String(data.get("pin") || "");
+    if (!/^\d{6}$/.test(pin)) { showToast("Enter a six-digit PIN."); return; }
+    if (pin !== String(data.get("confirmPin") || "")) { showToast("The PINs do not match."); return; }
+    try {
+      await backend.setFamilyMemberPin(activeFamilyId, memberId, pin);
+      const member = state.family.members.find((entry) => entry.id === memberId);
+      if (member) member.pinConfigured = true;
+      state.pinManagementMemberId = null;
+      persist(); render(); showToast("Subaccount PIN saved.");
+    } catch (error) { showFirebaseError("Save subaccount PIN", error); }
+  } else if (form.id === "subaccount-pin-form") {
+    const memberId = form.dataset.memberId;
+    const pin = String(data.get("pin") || "");
+    try {
+      await backend.selectFamilyMemberWithPin(activeFamilyId, memberId, pin);
+      const member = state.family.members.find((entry) => entry.id === memberId);
+      if (!member) throw new Error("This family profile is no longer available.");
+      localSwitchToMember(member);
+      if (userProfile) userProfile.activeMemberId = memberId;
+      state.pendingPinMemberId = null;
+      connectDataListeners(); state.page = "home"; persist(); render();
+      showToast(`Signed in as ${member.name}.`);
+    } catch (error) { showFirebaseError("Check subaccount PIN", error); }
   } else if (form.id === "family-link-form") {
     const code = String(data.get("code") || "").trim();
     if (!backend?.enabled || !authUser) { showToast("Sign in to your existing personal account before linking it."); return; }
@@ -1373,10 +1462,27 @@ async function handlePreference(event) {
 document.addEventListener("click", (event) => { handleClick(event).catch((error) => showToast(error.message || "Something went wrong.")); });
 document.addEventListener("input", handleInput);
 document.addEventListener("submit", (event) => { handleSubmit(event).catch((error) => showToast(error.message || "Something went wrong.")); });
-document.addEventListener("change", (event) => { if (event.target.id === "file-picker") handleFileChange(event); else handlePreference(event); });
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target.id === "file-picker") { handleFileChange(event); return; }
+  if (target.id === "requested-role") {
+    const familyChoice = $("#signup-family-choice");
+    const isParent = target.value.toLowerCase() === "parent";
+    familyChoice?.classList.toggle("hide", !isParent);
+    if (!isParent) { const checkbox = $("#create-family-account"); if (checkbox) checkbox.checked = false; }
+    return;
+  }
+  if (target.id === "member-account-type") {
+    const managed = target.value === "managed";
+    $("#managed-member-pin-fields")?.classList.toggle("hide", !managed);
+    [$("#member-pin"), $("#member-pin-confirm")].forEach((input) => { if (input) input.required = managed; });
+    return;
+  }
+  handlePreference(event);
+});
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=24").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=25").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;

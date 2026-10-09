@@ -1,4 +1,5 @@
-const { randomBytes } = require("node:crypto");
+const { randomBytes, scrypt, timingSafeEqual } = require("node:crypto");
+const { promisify } = require("node:util");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { FieldValue, getFirestore } = require("firebase-admin/firestore");
@@ -17,6 +18,7 @@ initializeApp({
 const auth = getAuth();
 const db = getFirestore();
 const storage = getStorage();
+const scryptAsync = promisify(scrypt);
 
 async function requireActiveSchoolUser(uid) {
   const snapshot = await db.doc(`users/${uid}`).get();
@@ -452,8 +454,174 @@ async function createFamilyAccountRecord(uid, user, data) {
       familyId: familyRef.id, memberId: uid, accountType: "owner", ownerUid: uid,
       status: "active", updatedAt: now
     }, { merge: true });
+    transaction.update(userRef, { activeMemberId: uid, requestedFamilyAccount: false, updatedAt: now });
     return { familyId: familyRef.id, name: familyData?.name || name, tribe: familyData?.tribe || tribe };
   });
+}
+
+function validateFamilyPinRequest(familyId, memberId) {
+  if (!familyId || familyId.includes("/") || !memberId || memberId.includes("/")) {
+    throw new HttpsError("invalid-argument", "Family and member IDs are required.");
+  }
+}
+
+async function setFamilyMemberPin(uid, user, data) {
+  const familyId = String(data.familyId || "");
+  const memberId = String(data.memberId || "");
+  const pin = String(data.pin || "");
+  validateFamilyPinRequest(familyId, memberId);
+  if (data.identityId !== uid || !["parent", "admin"].includes(String(user.role || "").toLowerCase())) {
+    throw new HttpsError("permission-denied", "Only the family account holder can set subaccount PINs.");
+  }
+  if (!/^\d{6}$/.test(pin)) throw new HttpsError("invalid-argument", "Choose a six-digit PIN.");
+
+  const salt = randomBytes(16);
+  const derivedKey = await scryptAsync(pin, salt, 64);
+  const secretRef = db.doc(`familyPinCredentials/${memberId}`);
+  const familyRef = db.doc(`families/${familyId}`);
+  const memberRef = db.doc(`families/${familyId}/members/${memberId}`);
+  const profileRef = db.doc(`profiles/${memberId}`);
+  const userRef = db.doc(`users/${uid}`);
+  const now = FieldValue.serverTimestamp();
+
+  await db.runTransaction(async (transaction) => {
+    const [familySnapshot, memberSnapshot, profileSnapshot, userSnapshot] = await Promise.all([
+      transaction.get(familyRef), transaction.get(memberRef), transaction.get(profileRef), transaction.get(userRef)
+    ]);
+    if (!familySnapshot.exists || familySnapshot.data().ownerUid !== uid
+        || !memberSnapshot.exists || !profileSnapshot.exists) {
+      throw new HttpsError("permission-denied", "Only this family’s account holder can set the PIN.");
+    }
+    const member = memberSnapshot.data();
+    const profile = profileSnapshot.data();
+    const currentUser = userSnapshot.data() || {};
+    if (!userSnapshot.exists || currentUser.status !== "active" || currentUser.schoolId !== "ctla"
+        || currentUser.activeMemberId !== uid || !["parent", "admin"].includes(String(currentUser.role || "").toLowerCase())
+        || member.accountType !== "managed" || member.status !== "active" || member.ownerUid !== uid
+        || profile.accountType !== "managed" || profile.status !== "active"
+        || profile.ownerUid !== uid || profile.managerUid !== uid || profile.familyId !== familyId) {
+      throw new HttpsError("permission-denied", "Only the family account holder can set this managed profile’s PIN.");
+    }
+    transaction.set(secretRef, {
+      familyId, memberId, ownerUid: uid, salt: salt.toString("base64url"),
+      hash: Buffer.from(derivedKey).toString("base64url"), failedAttempts: 0,
+      lockedUntil: null, updatedAt: now
+    });
+    transaction.update(memberRef, { pinConfigured: true, updatedAt: now });
+  });
+  return { saved: true };
+}
+
+async function selectFamilyMemberWithPin(uid, user, data) {
+  const familyId = String(data.familyId || "");
+  const memberId = String(data.memberId || "");
+  const pin = String(data.pin || "");
+  validateFamilyPinRequest(familyId, memberId);
+  if (data.identityId !== uid || !/^\d{6}$/.test(pin)) {
+    throw new HttpsError("invalid-argument", "Enter the six-digit PIN for this family profile.");
+  }
+
+  const familyRef = db.doc(`families/${familyId}`);
+  const memberRef = db.doc(`families/${familyId}/members/${memberId}`);
+  const profileRef = db.doc(`profiles/${memberId}`);
+  const userRef = db.doc(`users/${uid}`);
+  const secretRef = db.doc(`familyPinCredentials/${memberId}`);
+  const outcome = await db.runTransaction(async (transaction) => {
+    const [familySnapshot, memberSnapshot, profileSnapshot, userSnapshot, secretSnapshot] = await Promise.all([
+      transaction.get(familyRef), transaction.get(memberRef), transaction.get(profileRef),
+      transaction.get(userRef), transaction.get(secretRef)
+    ]);
+    const currentUser = userSnapshot.data() || {};
+    if (!familySnapshot.exists || familySnapshot.data().ownerUid !== uid
+        || !memberSnapshot.exists || !profileSnapshot.exists || !secretSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "This subaccount does not have a PIN yet. Ask the family account holder to set one.");
+    }
+    const member = memberSnapshot.data();
+    const profile = profileSnapshot.data();
+    const secret = secretSnapshot.data();
+    if (!userSnapshot.exists || currentUser.status !== "active" || currentUser.schoolId !== "ctla"
+        || currentUser.activeMemberId !== uid || !["parent", "admin"].includes(String(currentUser.role || user.role || "").toLowerCase())
+        || member.accountType !== "managed" || member.status !== "active" || member.ownerUid !== uid
+        || profile.accountType !== "managed" || profile.status !== "active"
+        || profile.ownerUid !== uid || profile.managerUid !== uid || profile.familyId !== familyId
+        || secret.ownerUid !== uid || secret.familyId !== familyId || secret.memberId !== memberId) {
+      throw new HttpsError("permission-denied", "This profile is not managed by the signed-in family account.");
+    }
+
+    const currentMillis = Date.now();
+    const lockMillis = secret.lockedUntil?.toMillis?.() || 0;
+    if (lockMillis > currentMillis) {
+      const seconds = Math.ceil((lockMillis - currentMillis) / 1000);
+      throw new HttpsError("resource-exhausted", `PIN entry is temporarily locked. Try again in ${Math.ceil(seconds / 60)} minute(s).`);
+    }
+    const salt = Buffer.from(String(secret.salt || ""), "base64url");
+    const storedHash = Buffer.from(String(secret.hash || ""), "base64url");
+    if (salt.length < 16 || storedHash.length !== 64) {
+      throw new HttpsError("failed-precondition", "This subaccount PIN needs to be reset by the family account holder.");
+    }
+    const candidate = Buffer.from(await scryptAsync(pin, salt, storedHash.length));
+    const currentAttempts = lockMillis && lockMillis <= currentMillis ? 0 : Number(secret.failedAttempts || 0);
+    if (!timingSafeEqual(candidate, storedHash)) {
+      const failedAttempts = currentAttempts + 1;
+      transaction.update(secretRef, failedAttempts >= 5
+        ? { failedAttempts, lockedUntil: new Date(currentMillis + 10 * 60 * 1000), updatedAt: FieldValue.serverTimestamp() }
+        : { failedAttempts, updatedAt: FieldValue.serverTimestamp() });
+      return { valid: false, locked: failedAttempts >= 5 };
+    }
+
+    transaction.update(userRef, { activeMemberId: memberId, updatedAt: FieldValue.serverTimestamp() });
+    transaction.update(secretRef, { failedAttempts: 0, lockedUntil: null, updatedAt: FieldValue.serverTimestamp() });
+    transaction.update(memberRef, { pinConfigured: true });
+    return { valid: true };
+  });
+  if (!outcome.valid) {
+    throw new HttpsError("permission-denied", outcome.locked
+      ? "Too many incorrect PINs. Try again in 10 minutes."
+      : "That PIN is incorrect. Try again.");
+  }
+  return { selected: true, memberId };
+}
+
+async function removeManagedFamilyMember(uid, user, data) {
+  const familyId = String(data.familyId || "");
+  const memberId = String(data.memberId || "");
+  validateFamilyPinRequest(familyId, memberId);
+  if (data.identityId !== uid || !["parent", "admin"].includes(String(user.role || "").toLowerCase())) {
+    throw new HttpsError("permission-denied", "Only the family account holder can remove managed profiles.");
+  }
+  const familyRef = db.doc(`families/${familyId}`);
+  const memberRef = db.doc(`families/${familyId}/members/${memberId}`);
+  const profileRef = db.doc(`profiles/${memberId}`);
+  const userRef = db.doc(`users/${uid}`);
+  const secretRef = db.doc(`familyPinCredentials/${memberId}`);
+  const now = FieldValue.serverTimestamp();
+  await db.runTransaction(async (transaction) => {
+    const [familySnapshot, memberSnapshot, profileSnapshot, userSnapshot] = await Promise.all([
+      transaction.get(familyRef), transaction.get(memberRef), transaction.get(profileRef), transaction.get(userRef)
+    ]);
+    if (!familySnapshot.exists || familySnapshot.data().ownerUid !== uid || !memberSnapshot.exists || !profileSnapshot.exists) {
+      throw new HttpsError("permission-denied", "Only this family’s account holder can remove this profile.");
+    }
+    const member = memberSnapshot.data();
+    const profile = profileSnapshot.data();
+    const currentUser = userSnapshot.data() || {};
+    if (member.accountType !== "managed" || member.status !== "active" || member.ownerUid !== uid
+        || profile.accountType !== "managed" || profile.status !== "active"
+        || profile.ownerUid !== uid || profile.managerUid !== uid || profile.familyId !== familyId
+        || !userSnapshot.exists || currentUser.status !== "active" || currentUser.schoolId !== "ctla") {
+      throw new HttpsError("failed-precondition", "This profile is not an active managed member of your family.");
+    }
+    transaction.delete(memberRef);
+    transaction.update(profileRef, {
+      status: "archived", familyId: null, managerUid: FieldValue.delete(), updatedAt: now
+    });
+    transaction.update(familyRef, {
+      memberIds: FieldValue.arrayRemove(memberId), memberCount: FieldValue.increment(-1), updatedAt: now
+    });
+    transaction.delete(secretRef);
+    if (currentUser.activeMemberId === memberId) transaction.update(userRef, { activeMemberId: uid, updatedAt: now });
+  });
+  return { removed: true };
 }
 
 // Reuse the existing callable name so Firebase updates its deployed invoker instead of creating
@@ -464,6 +632,15 @@ exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }
   const user = await requireActiveSchoolUser(uid);
   if (request.data?.operation === "create-family") {
     return createFamilyAccountRecord(uid, user, request.data);
+  }
+  if (request.data?.operation === "set-family-pin") {
+    return setFamilyMemberPin(uid, user, request.data);
+  }
+  if (request.data?.operation === "select-family-profile") {
+    return selectFamilyMemberWithPin(uid, user, request.data);
+  }
+  if (request.data?.operation === "remove-managed-member") {
+    return removeManagedFamilyMember(uid, user, request.data);
   }
   const { identityId: activeIdentityId } = await getActiveIdentityProfile(uid, request.data?.identityId, user);
   if (activeIdentityId !== uid) throw new HttpsError("permission-denied", "Switch to the family account holder profile to change family logins.");
@@ -518,8 +695,9 @@ exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }
     });
     batch.update(memberRef, {
       uid: createdUser.uid, ownerUid: createdUser.uid, linkedUid: createdUser.uid,
-      accountType: "linked", role, linkedAt: now, updatedAt: now
+      accountType: "linked", role, pinConfigured: false, linkedAt: now, updatedAt: now
     });
+    batch.delete(db.doc(`familyPinCredentials/${memberId}`));
     batch.set(db.doc(`familyLinks/${createdUser.uid}`), {
       familyId, memberId, accountType: "linked", ownerUid: createdUser.uid, status: "active", updatedAt: now
     });

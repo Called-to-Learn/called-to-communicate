@@ -353,12 +353,17 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.auth.uid == userId
         && request.resource.data.keys().hasOnly([
-          'displayName', 'email', 'role', 'requestedRole', 'status', 'schoolId', 'createdAt'
+          'displayName', 'email', 'role', 'requestedRole', 'requestedFamilyAccount', 'status', 'schoolId', 'createdAt'
         ])
         && request.resource.data.role == 'student'
         && request.resource.data.status == 'pending'
         && request.resource.data.schoolId == 'ctla'
-        && request.resource.data.requestedRole in ['parent', 'student', 'teacher', 'presidency', 'admin'];
+        && request.resource.data.requestedRole in ['parent', 'student', 'teacher', 'presidency', 'admin']
+        && (!request.resource.data.keys().hasAny(['requestedFamilyAccount'])
+          || request.resource.data.requestedFamilyAccount is bool)
+        && (!request.resource.data.keys().hasAny(['requestedFamilyAccount'])
+          || request.resource.data.requestedFamilyAccount != true
+          || request.resource.data.requestedRole == 'parent');
 
       // An account cannot promote itself, change school, or approve itself.
       allow update: if signedIn()
@@ -368,7 +373,7 @@ service cloud.firestore {
               'displayName', 'photoURL', 'activeMemberId', 'notificationPrefs', 'updatedAt'
             ])
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['activeMemberId'])
-              || ownedProfile(request.resource.data.activeMemberId))
+              || request.resource.data.activeMemberId == userId)
             && request.resource.data.role == resource.data.role
             && request.resource.data.status == resource.data.status
             && request.resource.data.schoolId == resource.data.schoolId

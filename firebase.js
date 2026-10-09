@@ -27,7 +27,7 @@ export async function connectFirebase(onAuthChanged, onError) {
       auth,
       signIn: (email, password) => authSDK.signInWithEmailAndPassword(auth, email, password),
       resetPassword: (email) => authSDK.sendPasswordResetEmail(auth, email),
-      signUp: (email, password, displayName, requestedRole) => signUp(email, password, displayName, requestedRole),
+      signUp: (email, password, displayName, requestedRole, requestedFamilyAccount = false) => signUp(email, password, displayName, requestedRole, requestedFamilyAccount),
       signOut: () => authSDK.signOut(auth),
       subscribeConversations: (uid, identityId, next, error, includeLegacy = true) => {
         const reportQueryError = (queryName, { ignorePermissionDenied = false } = {}) => (cause) => {
@@ -327,6 +327,22 @@ export async function connectFirebase(onAuthChanged, onError) {
         });
         return result.data.familyId;
       },
+      setFamilyMemberPin: async (familyId, memberId, pin) => {
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "createFamilyAccount")({
+          operation: "set-family-pin", familyId, memberId, pin, identityId: auth.currentUser?.uid
+        });
+        return result.data;
+      },
+      selectFamilyMemberWithPin: async (familyId, memberId, pin) => {
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "createFamilyAccount")({
+          operation: "select-family-profile", familyId, memberId, pin, identityId: auth.currentUser?.uid
+        });
+        return result.data;
+      },
       setActiveMember: async (uid, memberId) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "users", uid), { activeMemberId: memberId }),
       updateFamily: async (familyId, updates) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "families", familyId), updates),
       addFamilyMember: async (familyId, member) => {
@@ -352,7 +368,7 @@ export async function connectFirebase(onAuthChanged, onError) {
         const profileRef = firestoreSDK.doc(db, "profiles", memberId);
         const memberData = {
           familyId, memberId, uid, ownerUid: uid, accountType: "managed", status: "active",
-          name: member.name.trim(), role, grade: member.grade || "", tribe: member.tribe || "", createdAt: now
+          name: member.name.trim(), role, grade: member.grade || "", tribe: member.tribe || "", pinConfigured: false, createdAt: now
         };
         const batch = firestoreSDK.writeBatch(db);
         batch.set(memberRef, memberData);
@@ -392,27 +408,24 @@ export async function connectFirebase(onAuthChanged, onError) {
         await batch.commit();
       },
       removeFamilyMember: async (familyId, memberId) => {
-        const familyRef = firestoreSDK.doc(db, "families", familyId);
         const memberRef = firestoreSDK.doc(db, "families", familyId, "members", memberId);
         const memberSnapshot = await firestoreSDK.getDoc(memberRef);
         if (!memberSnapshot.exists() || memberSnapshot.data().accountType === "owner") throw new Error("The family account holder cannot be removed.");
         const member = memberSnapshot.data();
+        if (member.accountType === "managed") {
+          const functionsSDK = await sdk("functions");
+          const functions = functionsSDK.getFunctions(app, "us-central1");
+          await functionsSDK.httpsCallable(functions, "createFamilyAccount")({
+            operation: "remove-managed-member", familyId, memberId, identityId: auth.currentUser?.uid
+          });
+          return;
+        }
         const batch = firestoreSDK.writeBatch(db);
         if (member.accountType === "linked" && member.linkedUid) {
           batch.delete(firestoreSDK.doc(db, "familyLinks", member.linkedUid));
           batch.update(firestoreSDK.doc(db, "profiles", member.linkedUid), { familyId: null, updatedAt: firestoreSDK.serverTimestamp() });
         }
-        if (member.accountType === "managed") {
-          const uid = auth.currentUser?.uid;
-          const userRef = firestoreSDK.doc(db, "users", uid);
-          const userSnapshot = await firestoreSDK.getDoc(userRef);
-          if (userSnapshot.data()?.activeMemberId === memberId) batch.update(userRef, { activeMemberId: uid, updatedAt: firestoreSDK.serverTimestamp() });
-          batch.update(firestoreSDK.doc(db, "profiles", memberId), { status: "archived", familyId: null, updatedAt: firestoreSDK.serverTimestamp() });
-        }
         batch.delete(memberRef);
-        if (member.accountType === "managed") batch.update(familyRef, {
-          memberIds: firestoreSDK.arrayRemove(memberId), memberCount: firestoreSDK.increment(-1), updatedAt: firestoreSDK.serverTimestamp()
-        });
         await batch.commit();
       },
       clearLegacyMemberSettings: async (familyId, memberId) => {
@@ -473,11 +486,14 @@ export async function connectFirebase(onAuthChanged, onError) {
       }
     };
 
-    async function signUp(email, password, displayName, requestedRole) {
+    async function signUp(email, password, displayName, requestedRole, requestedFamilyAccount = false) {
       const credential = await authSDK.createUserWithEmailAndPassword(auth, email, password);
       await authSDK.updateProfile(credential.user, { displayName });
+      const normalizedRole = String(requestedRole || "student").toLowerCase();
       await firestoreSDK.setDoc(firestoreSDK.doc(db, "users", credential.user.uid), {
-        displayName, email, role: "student", requestedRole, status: "pending", schoolId: "ctla", createdAt: firestoreSDK.serverTimestamp()
+        displayName, email, role: "student", requestedRole: normalizedRole,
+        requestedFamilyAccount: normalizedRole === "parent" && requestedFamilyAccount === true,
+        status: "pending", schoolId: "ctla", createdAt: firestoreSDK.serverTimestamp()
       });
       await firestoreSDK.setDoc(firestoreSDK.doc(db, "directory", credential.user.uid), {
         displayName, role: "student", status: "pending", schoolId: "ctla"
