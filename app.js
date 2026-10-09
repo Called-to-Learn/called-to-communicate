@@ -951,7 +951,16 @@ async function handleClick(event) {
       if (!remoteMode && roles.includes(role)) { state.currentUser.role = role; persist(); render(); showToast(`Previewing ${role} view`); }
       break;
     case "family": state.page = "family"; render(); break;
-    case "settings-detail": state.page = "settings-detail"; state.settingsDetail = key; render(); break;
+    case "settings-detail":
+      if (key === "family") {
+        state.page = "family";
+        state.settingsDetail = "";
+      } else {
+        state.page = "settings-detail";
+        state.settingsDetail = key;
+      }
+      render();
+      break;
     case "approve-user": {
       const select = $(`#approve-role-${CSS.escape(id)}`);
       const role = select?.value || "student";
