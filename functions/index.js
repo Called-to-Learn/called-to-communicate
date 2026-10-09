@@ -19,6 +19,19 @@ async function requireActiveSchoolUser(uid) {
   return user;
 }
 
+async function getAccountIdentityId(uid) {
+  const linkSnapshot = await db.doc(`familyLinks/${uid}`).get();
+  const link = linkSnapshot.exists ? linkSnapshot.data() : null;
+  // Only an active, accepted family link changes a login's school identity.
+  // Legacy familyMemberId fields can point at an old/deleted profile and must not
+  // redirect approval or role updates away from the authenticated user's profile.
+  return link?.status === "active"
+    && link.accountType === "linked"
+    && typeof link.memberId === "string"
+    ? link.memberId
+    : uid;
+}
+
 async function getOwnedIdentityProfile(uid, identityId, user) {
   if (identityId === uid) {
     const profile = await db.doc(`profiles/${uid}`).get();
@@ -239,7 +252,7 @@ exports.approveSchoolUser = onCall({ region: "us-central1", maxInstances: 10 }, 
     throw new HttpsError("failed-precondition", "This account is no longer pending approval.");
   }
   const user = userSnapshot.data();
-  const identityId = user.familyMemberId || userId;
+  const identityId = await getAccountIdentityId(userId);
   const identityRef = db.doc(`profiles/${identityId}`);
   const identitySnapshot = await identityRef.get();
   const identityProfile = identitySnapshot.exists ? identitySnapshot.data() : null;
@@ -305,9 +318,12 @@ exports.setSchoolUserRole = onCall({ region: "us-central1", maxInstances: 10 }, 
     if (admins.size <= 1) throw new HttpsError("failed-precondition", "The school must keep at least one active Admin.");
   }
 
-  const identityId = user.familyMemberId || userId;
+  const identityId = await getAccountIdentityId(userId);
   const identityRef = db.doc(`profiles/${identityId}`);
   const identitySnapshot = await identityRef.get();
+  if (!identitySnapshot.exists && identityId !== userId) {
+    throw new HttpsError("failed-precondition", "The linked family profile is missing. Restore it before changing this account's role.");
+  }
   const familyId = identitySnapshot.data()?.familyId || user.familyId;
   let memberRef = null;
   let memberSnapshot = null;
@@ -322,7 +338,14 @@ exports.setSchoolUserRole = onCall({ region: "us-central1", maxInstances: 10 }, 
   batch.set(db.doc(`directory/${userId}`), {
     displayName: user.displayName || "School member", role, status: "active", schoolId: "ctla"
   }, { merge: true });
-  if (identitySnapshot.exists) batch.update(identityRef, { role, updatedAt: now });
+  if (identitySnapshot.exists) {
+    batch.update(identityRef, { role, status: "active", updatedAt: now });
+  } else {
+    batch.set(identityRef, {
+      displayName: user.displayName || "School member", role, accountType: "personal", ownerUid: userId,
+      schoolId: "ctla", status: "active", settings: {}, createdAt: now
+    });
+  }
   if (memberSnapshot?.exists && memberSnapshot.data().accountType === "linked") {
     batch.update(memberRef, { role, updatedAt: now });
   }

@@ -100,13 +100,13 @@ service cloud.firestore {
     function canAccessProfile(profileId) {
       let path = profilePath(profileId);
       return activeUser()
-        && exists(path)
-        && get(path).data.status == 'active'
         && (profileId == request.auth.uid
-          || (get(path).data.ownerUid == request.auth.uid
-            && (get(path).data.accountType != 'managed'
-              || get(path).data.managerUid == request.auth.uid))
-          || linkedProfile(profileId));
+          || (exists(path)
+            && get(path).data.status == 'active'
+            && ((get(path).data.ownerUid == request.auth.uid
+              && (get(path).data.accountType != 'managed'
+                || get(path).data.managerUid == request.auth.uid))
+              || linkedProfile(profileId))));
     }
 
     function identityIdForUser() {
@@ -208,15 +208,33 @@ service cloud.firestore {
         && exists(conversationPath)
         && (conversation.memberProfileIds is list
           ? (identityId in conversation.memberProfileIds && canAccessProfile(identityId))
-          : (identityId == request.auth.uid && request.auth.uid in conversation.memberUids));
+          : (identityId == request.auth.uid
+            && conversation.keys().hasAny(['memberUids'])
+            && conversation.memberUids is list
+            && request.auth.uid in conversation.memberUids));
     }
 
     function conversationReader() {
       let identityId = identityIdForUser();
       return (resource.data.memberProfileIds is list
           ? (identityId in resource.data.memberProfileIds && canAccessProfile(identityId))
-          : (identityId == request.auth.uid && request.auth.uid in resource.data.memberUids))
-        || presidencyOrAdmin();
+          : (identityId == request.auth.uid
+            && resource.data.keys().hasAny(['memberUids'])
+            && resource.data.memberUids is list
+            && request.auth.uid in resource.data.memberUids));
+    }
+
+    function profileConversationReader() {
+      let identityId = identityIdForUser();
+      return identityId in resource.data.memberProfileIds
+        && canAccessProfile(identityId);
+    }
+
+    function legacyConversationReader() {
+      let identityId = identityIdForUser();
+      return identityId == request.auth.uid
+        && resource.data.keys().hasAny(['memberUids'])
+        && request.auth.uid in resource.data.memberUids;
     }
 
     function conversationManager(conversationId) {
@@ -547,9 +565,20 @@ service cloud.firestore {
     }
 
     match /conversations/{conversationId} {
-      allow read: if activeUser()
+      allow get: if activeUser()
         && resource.data.schoolId == 'ctla'
         && conversationReader();
+
+      // Keep the two list queries separate. Firestore cannot prove a profile
+      // membership query against a ternary that also supports legacy UID-only
+      // records, so profile list reads use their exact membership predicate.
+      allow list: if activeUser()
+        && resource.data.schoolId == 'ctla'
+        && profileConversationReader();
+      allow list: if activeUser()
+        && resource.data.schoolId == 'ctla'
+        && !resource.data.keys().hasAny(['memberProfileIds'])
+        && legacyConversationReader();
 
       allow create: if activeUser()
         && request.resource.data.schoolId == 'ctla'
@@ -593,7 +622,7 @@ service cloud.firestore {
       allow delete: if conversationManager(conversationId);
 
       match /messages/{messageId} {
-        allow read: if conversationMember(conversationId) || conversationManager(conversationId);
+        allow read: if conversationMember(conversationId);
         allow create: if conversationMember(conversationId)
           && request.resource.data.keys().hasOnly([
             'senderUid', 'senderProfileId', 'senderName', 'senderInitials', 'text', 'createdAt', 'schoolId',
