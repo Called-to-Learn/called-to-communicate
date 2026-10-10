@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=25";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=26";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -47,13 +47,13 @@ function seedState() {
     { id: "deadline", date: keyForDate(addDays(now, 5)), time: "11:59 PM", title: "Science project due", detail: "Submit your final project", kind: "deadline", color: "orange" }
   ];
   const family = {
-    name: "The Smith Family", tribe: "Lamanites", members: [
-      { id: "jonathan", name: "Jonathan Smith", role: "Parent", note: "Account Holder", color: "purple" },
-      { id: "sarah-smith", name: "Sarah Smith", role: "Parent", note: "", color: "pink" },
-      { id: "emma-smith", name: "Emma Smith", role: "Student", note: "Grade 6", tribe: "Nephites", color: "blue" },
-      { id: "noah-smith", name: "Noah Smith", role: "Student", note: "Grade 4", tribe: "Lamanites", color: "teal" },
-      { id: "ella-smith", name: "Ella Smith", role: "Student", note: "Grade 2", tribe: "Jaredites", color: "orange" },
-      { id: "benjamin-smith", name: "Benjamin Smith", role: "Student", note: "Grade K", tribe: "Mulekites", color: "purple" }
+    name: "The Smith Family", tribe: "Lamanites", description: "", allowLinkedAccounts: true, requireChildPin: true, members: [
+      { id: "jonathan", name: "Jonathan Smith", role: "Parent", note: "Account Holder", accountType: "owner", pinConfigured: false, pinLength: 6, color: "purple" },
+      { id: "sarah-smith", name: "Sarah Smith", role: "Parent", note: "", accountType: "managed", pinConfigured: false, pinLength: 4, color: "pink" },
+      { id: "emma-smith", name: "Emma Smith", role: "Student", note: "Grade 6", tribe: "Nephites", accountType: "managed", pinConfigured: false, pinLength: 4, color: "blue" },
+      { id: "noah-smith", name: "Noah Smith", role: "Student", note: "Grade 4", tribe: "Lamanites", accountType: "managed", pinConfigured: false, pinLength: 4, color: "teal" },
+      { id: "ella-smith", name: "Ella Smith", role: "Student", note: "Grade 2", tribe: "Jaredites", accountType: "managed", pinConfigured: false, pinLength: 4, color: "orange" },
+      { id: "benjamin-smith", name: "Benjamin Smith", role: "Student", note: "Grade K", tribe: "Mulekites", accountType: "managed", pinConfigured: false, pinLength: 4, color: "purple" }
     ]
   };
   const messages = {
@@ -142,6 +142,7 @@ let familySetupNextAfterPin = "members";
 let familyAddMemberDraft = null;
 let familyAddMemberPinStep = false;
 let familyEditor = null;
+let familyEditorDraft = null;
 
 const persist = () => {
   // Remote school records stay in Firebase's authenticated client cache, not shared browser storage.
@@ -157,6 +158,7 @@ const canSelectFamilyMember = (member) => !remoteMode || (member?.accountType ==
   : member?.accountType === "owner"
     ? member.id === authUser?.uid
     : member?.accountType === "managed" && (member.ownerUid === authUser?.uid || member.uid === authUser?.uid));
+const canManageFamilyAccount = () => !remoteMode || (familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid);
 const activeIdentityId = () => state.activeMemberId || authUser?.uid || "demo";
 const currentRole = () => remoteMode
   ? (activeIdentityId() === authUser?.uid ? titleRole(userProfile?.role) : titleRole(activeFamilyMember()?.role || "student"))
@@ -388,55 +390,34 @@ function renderFamily() {
   if (remoteMode && !activeFamilyId) return renderFamilySetup();
   const family = state.family;
   const familyRoles = remoteMode ? (isAdmin() ? ["Parent", "Student", "Teacher", "Presidency"] : ["Parent", "Student"]) : roles;
-  const canManageFamily = !remoteMode || (familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid);
+  const canManageFamily = canManageFamilyAccount();
   if (familyEditor) return renderFamilyEditor(familyRoles, canManageFamily);
-  const addDraft = familyAddMemberDraft || {};
-  const memberForm = state.addingMember && canManageFamily ? familyAddMemberPinStep ? `<form id="family-member-pin-form" class="card family-member-form family-member-pin-step">
-    <h3>Set PIN for ${esc(addDraft.name || "this profile")}</h3><p class="item-subtitle">Choose a four-digit PIN. It will be required when opening this family member’s profile.</p>
-    <div class="form-field"><label for="member-pin">Four-digit PIN</label><input id="member-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" required placeholder="Enter 4 digits"></div>
-    <div class="form-field"><label for="member-pin-confirm">Confirm PIN</label><input id="member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" required placeholder="Enter it again"></div>
-    <div class="family-member-form-actions"><button class="button primary" type="submit">Set PIN</button><button class="button ghost" type="button" data-action="back-member-pin-step">Back</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : `<form id="family-member-form" class="card family-member-form">
-    <div class="form-field"><label for="member-account-type">Account type</label><select id="member-account-type" name="accountType"><option value="managed" ${addDraft.accountType !== "linked" ? "selected" : ""}>Managed subaccount · shares this login</option><option value="linked" ${addDraft.accountType === "linked" ? "selected" : ""}>Link a personal account</option></select></div>
-    <div class="form-field"><label for="member-name">Full name</label><input id="member-name" name="name" value="${esc(addDraft.name || "")}" required placeholder="Family member name"></div>
-    <div class="form-field ${addDraft.accountType === "linked" ? "" : "hide"}" id="member-email-field"><label for="member-email">Personal account email</label><input id="member-email" name="email" value="${esc(addDraft.email || "")}" type="email" autocomplete="off" ${addDraft.accountType === "linked" ? "required" : ""} placeholder="member@example.com"><span class="item-subtitle">The person signs in to their existing school account and enters the invitation code. No duplicate profile is created.</span></div>
-    <div class="form-field"><label for="member-role">Role</label><select id="member-role" name="role">${familyRoles.map((role) => `<option ${addDraft.role === role || (!addDraft.role && role === "Student") ? "selected" : ""}>${role}</option>`).join("")}</select><span class="item-subtitle">Linked accounts keep their verified school role. Staff tools require a separate school-approved login.</span></div>
-    <div class="form-field"><label for="member-grade">Grade (optional)</label><input id="member-grade" name="grade" value="${esc(addDraft.grade || "")}" placeholder="e.g. Grade 6"></div>
-    <div class="form-field"><label for="member-tribe">Tribe</label><select id="member-tribe" name="tribe">${familyTribes.map((tribe) => `<option ${addDraft.tribe === tribe || (!addDraft.tribe && tribe === "Lamanites") ? "selected" : ""}>${tribe}</option>`).join("")}</select></div>
-    <div class="family-member-form-actions"><button class="button primary" type="submit">${addDraft.accountType === "linked" ? "Add or Invite" : "Set PIN"}</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : "";
-  const pinFormMember = state.family.members.find((member) => member.id === state.pinManagementMemberId);
-  const pinLength = pinFormMember ? Number(pinFormMember.pinLength || (pinFormMember.accountType === "owner" ? 6 : 4)) : 4;
-  const pinManagementForm = canManageFamily && ["managed", "owner"].includes(pinFormMember?.accountType) ? `<form id="family-pin-form" data-member-id="${esc(pinFormMember.id)}" data-pin-length="${pinLength}" class="card pin-form family-pin-management-form"><h3>${pinFormMember.accountType === "owner" ? "Family account holder" : esc(pinFormMember.name)} · ${pinFormMember.pinConfigured ? "Change" : "Set"} PIN</h3><p class="item-subtitle">Use a ${pinLength}-digit number. Five incorrect attempts temporarily lock PIN entry.</p><div class="form-field"><label for="family-pin">New ${pinLength}-digit PIN</label><input id="family-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{${pinLength}}" minlength="${pinLength}" maxlength="${pinLength}" autocomplete="new-password" required placeholder="${pinLength}-digit PIN"></div><div class="form-field"><label for="family-pin-confirm">Confirm PIN</label><input id="family-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{${pinLength}}" minlength="${pinLength}" maxlength="${pinLength}" autocomplete="new-password" required placeholder="Enter it again"></div><div class="pin-form-actions"><button class="button primary" type="submit">Save PIN</button><button class="button ghost" type="button" data-action="cancel-member-pin">Cancel</button></div></form>` : "";
-  const memberRows = family.members.map((member) => {
+  const memberRows = family.members.map((member, index) => {
     const selected = state.activeMemberId === member.id;
-    const memberInitials = member.initials || member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("");
-    const isOwner = member.accountType === "owner" || member.note === "Account Holder";
-    const editActions = canManageFamily && member.accountType === "managed"
-        ? `<button class="button ghost" data-action="edit-member" data-id="${esc(member.id)}">${icon("compose")}Edit profile</button><button class="button ghost family-action-pin" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button><button class="button ghost danger-text" data-action="remove-family-member" data-id="${esc(member.id)}">Remove</button>`
-        : canManageFamily && member.accountType === "linked"
-          ? `<button class="button ghost danger-text" data-action="remove-family-member" data-id="${esc(member.id)}">Unlink account</button>` : "";
-    const secondaryRole = member.grade || (member.note !== "Account Holder" ? member.note : "") || "";
-    const roleLine = [member.role, secondaryRole].filter(Boolean).join(" · ");
-    const status = member.accountType === "managed" ? (member.pinConfigured ? "PIN protected" : "PIN needed") : isOwner ? "Account holder" : member.accountType === "linked" ? "Personal login" : "Family profile";
+    const owner = member.accountType === "owner" || member.note === "Account Holder";
+    const detail = [member.role, owner ? "Account Holder" : (member.grade || member.note)].filter(Boolean).join(" · ");
+    const glyph = "user";
     return `<article class="family-managed-member card"><button class="family-member-select ${selected ? "active" : ""}" data-action="switch-member" data-id="${esc(member.id)}" aria-label="${selected ? "Current profile: " : "Switch to "}${esc(member.name)}" ${canSelectFamilyMember(member) ? "" : "disabled"}>
-      <span class="avatar small ${esc(member.color || "purple")}">${esc(memberInitials)}</span><span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="family-member-role">${esc(roleLine || member.role)}</span><span class="family-member-badges">${member.tribe ? `<span class="family-member-badge">${icon("users")}${esc(member.tribe)}</span>` : ""}<span class="family-member-badge ${member.accountType === "linked" ? "linked" : ""}">${icon(member.accountType === "linked" ? "user" : "shield")}${esc(status)}</span></span></span><span class="family-member-indicator">${selected ? `<span>Current</span>` : icon("chevron")}</span>
-    </button>${editActions ? `<div class="family-member-actions">${editActions}</div>` : ""}</article>`;
+      <span class="family-person-avatar tone-${index % 6}">${icon(glyph)}</span><span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="family-member-role">${esc(detail || member.role)}</span>${member.tribe ? `<span class="family-member-tribe">${icon("users")} Tribe: ${esc(member.tribe)}</span>` : ""}</span><span class="family-member-indicator">${icon("chevron")}</span>
+    </button></article>`;
   }).join("");
-  const owner = family.members.find((member) => member.accountType === "owner");
-  const securityCard = canManageFamily && owner ? `<div class="family-security card"><span class="family-security-icon">${icon("shield")}</span><div class="family-security-copy"><strong>Account holder PIN</strong><span>${owner.pinConfigured ? "Your family profile is protected." : "Set a PIN to protect the family account holder profile."}</span></div><button class="button ghost" data-action="manage-member-pin" data-id="${esc(owner.id)}">${owner.pinConfigured ? "Change PIN" : "Set PIN"}</button></div>` : "";
-  return `<section class="page family-page">${header({ action: "account", showAction: false })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button><div class="page-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Manage your family profiles and linked accounts.</p></div></div>
-    <div class="family-summary card"><span class="item-icon family-summary-icon">${icon("home")}</span><div class="family-copy"><span class="family-eyebrow">Family account</span><h2>${esc(family.name)}</h2><p>${family.members.length} ${family.members.length === 1 ? "member" : "members"} <span>·</span> ${familyLink?.accountType === "linked" ? "Linked personal account" : "Shared family login"}</p></div>${canManageFamily ? `<button class="button ghost" data-action="edit-family">${icon("compose")}<span>Edit family</span></button>` : ""}</div>
-    ${securityCard}${pinManagementForm}${memberForm}
-    <div class="family-section-heading"><div><h2>Family members</h2><p>Choose a profile to switch accounts.</p></div><span class="family-count">${family.members.length} ${family.members.length === 1 ? "person" : "people"}</span></div>
+  const editButton = canManageFamily ? `<button class="button ghost family-edit-title" data-action="edit-family">${icon("compose")} Edit Family</button>` : "";
+  const summaryEditButton = canManageFamily ? `<button class="button ghost family-edit-summary" data-action="edit-family">${icon("compose")}<span>Edit Family</span></button>` : "";
+  return `<section class="page family-page">${header({ action: "account", showAction: false })}<button class="back-link" data-action="tab" data-tab="settings">${icon("back")} Settings</button>
+    <div class="page-title-row family-title-row"><div><h1 class="page-title">Family Account</h1><p class="page-subtitle">Manage your family members and their accounts.</p></div>${editButton}</div>
+    <div class="family-summary card"><span class="item-icon family-summary-icon">${icon("home")}</span><div class="family-copy"><h2>${esc(family.name)}</h2><p>${family.members.length} ${family.members.length === 1 ? "member" : "members"}</p></div>${summaryEditButton}</div>
+    <div class="family-section-heading"><h2>Family Members</h2>${canManageFamily ? `<button class="button lavender family-add-button" data-action="add-member">${icon("plus")} Add Family Member</button>` : ""}</div>
     <div class="family-managed-list">${memberRows || `<div class="empty-state card">No family members have been added yet.</div>`}</div>
-    <div class="notice-card family-about"><strong>About your family profiles</strong><span>Managed profiles share the family login and keep their own school roles. Linked members use their own login and keep their account independent.</span></div></section>`;
+    <div class="notice-card family-about"><span class="family-about-icon">${icon("users")}</span><div><strong>About Family Accounts</strong><span>A family account lets you manage multiple family members under one account. Each member has their own role, classes, and settings.</span></div>${icon("chevron", "row-chevron")}</div></section>`;
 }
 
 function renderFamilyEditor(familyRoles, canManageFamily) {
   if (!canManageFamily) { familyEditor = null; return renderFamily(); }
+  if (familyEditor.type === "family-members") return renderFamilyMembersManager(familyRoles);
   const editingMember = familyEditor.type === "member" ? state.family.members.find((member) => member.id === familyEditor.memberId) : null;
   if (familyEditor.type === "member" && (!editingMember || editingMember.accountType !== "managed")) { familyEditor = null; return renderFamily(); }
   const isMember = Boolean(editingMember);
-  const title = isMember ? "Edit family member" : "Edit family";
+  const title = isMember ? "Edit Family Member" : "Edit Family";
   const form = isMember ? `<form id="family-member-edit-form" class="card family-editor-form" data-member-id="${esc(editingMember.id)}">
       <div class="family-editor-person"><span class="avatar small ${esc(editingMember.color || "purple")}">${esc(editingMember.initials || editingMember.name.split(/\s+/).map((part) => part[0]).slice(0,2).join(""))}</span><div><strong>${esc(editingMember.name)}</strong><span>Managed family profile</span></div></div>
       <div class="form-field"><label for="edit-member-name">Full name</label><input id="edit-member-name" name="name" maxlength="80" value="${esc(editingMember.name)}" required autocomplete="name"></div>
@@ -444,13 +425,41 @@ function renderFamilyEditor(familyRoles, canManageFamily) {
       <div class="form-field"><label for="edit-member-grade">Grade <span class="family-optional">Optional</span></label><select id="edit-member-grade" name="grade"><option value="">No grade selected</option>${["Kindergarten", ...Array.from({ length: 12 }, (_, i) => `Grade ${i + 1}`)].map((grade) => `<option value="${esc(grade)}" ${(editingMember.grade || editingMember.note || "") === grade ? "selected" : ""}>${esc(grade)}</option>`).join("")}</select></div>
       <div class="form-field"><label for="edit-member-tribe">Tribe</label><select id="edit-member-tribe" name="tribe"><option value="">No tribe selected</option>${familyTribes.map((tribe) => `<option value="${esc(tribe)}" ${(editingMember.tribe || "") === tribe ? "selected" : ""}>${esc(tribe)}</option>`).join("")}</select></div>
       <div class="family-editor-actions"><button class="button primary" type="submit">Save changes</button><button class="button ghost" type="button" data-action="cancel-family-edit">Cancel</button></div>
-    </form>` : `<form id="family-edit-form" class="card family-editor-form">
-      <div class="family-editor-person"><span class="item-icon family-summary-icon">${icon("home")}</span><div><strong>${esc(state.family.name)}</strong><span>${state.family.members.length} family ${state.family.members.length === 1 ? "member" : "members"}</span></div></div>
-      <div class="form-field"><label for="edit-family-name">Family name</label><input id="edit-family-name" name="name" maxlength="80" value="${esc(state.family.name)}" required autocomplete="organization"></div>
-      <p class="family-editor-help">This name appears across your family account and member settings.</p>
-      <div class="family-editor-actions"><button class="button primary" type="submit">Save changes</button><button class="button ghost" type="button" data-action="cancel-family-edit">Cancel</button></div>
+    </form>` : `<form id="family-edit-form" class="family-edit-content">
+      <section class="card family-information-card"><h2>Family Information</h2><div class="family-information-grid"><span class="family-information-icon">${icon("users")}</span><div class="family-information-fields">
+        <div class="family-edit-field"><label for="edit-family-name">Family Name</label><input id="edit-family-name" name="name" maxlength="100" value="${esc(familyEditorDraft?.name ?? state.family.name)}" required autocomplete="organization"></div>
+        <div class="family-edit-field family-description-field"><label for="edit-family-description">Family Description</label><textarea id="edit-family-description" name="description" maxlength="400" rows="2" placeholder="Tell your family’s story">${esc(familyEditorDraft?.description ?? state.family.description ?? "")}</textarea></div>
+        <div class="family-edit-field"><label for="edit-family-holder">Primary Account Holder</label><select id="edit-family-holder" disabled aria-label="Primary account holder can only be changed through account transfer">${(() => { const owner = state.family.members.find((member) => member.accountType === "owner" || member.id === authUser?.uid || member.note === "Account Holder"); return `<option>${esc(owner?.name || state.currentUser.name)}</option>`; })()}</select></div>
+        <div class="family-edit-field"><label for="edit-family-type">Family Type</label><input id="edit-family-type" value="Family Account" disabled></div>
+      </div></div></section>
+      <h2 class="family-subheading">Manage Members</h2><button class="card family-manage-members-link" type="button" data-action="family-manage-members"><span class="family-about-icon">${icon("users")}</span><span><strong>${state.family.members.length} family ${state.family.members.length === 1 ? "member" : "members"}</strong><small>Add or remove family members, manage roles, and view their accounts.</small></span>${icon("chevron", "row-chevron")}</button>
+      <section class="card family-permissions"><h2>Permissions</h2>
+        <label class="family-permission-row"><span class="family-permission-icon">${icon("link")}</span><span class="family-permission-copy"><strong>Allow linked personal accounts</strong><small>Let family members link their personal accounts to this family.</small></span><input type="checkbox" name="allowLinkedAccounts" ${familyEditorDraft?.allowLinkedAccounts !== false ? "checked" : ""}></label>
+        <label class="family-permission-row"><span class="family-permission-icon">${icon("shield")}</span><span class="family-permission-copy"><strong>Require PIN for child subaccounts</strong><small>Require a PIN to access child accounts and restricted content.</small></span><input type="checkbox" name="requireChildPin" ${familyEditorDraft?.requireChildPin !== false ? "checked" : ""}></label>
+      </section>
+      <div class="family-editor-actions"><button class="button outline" type="button" data-action="cancel-family-edit">Cancel</button><button class="button primary" type="submit">Save Changes</button></div>
     </form>`;
-  return `<section class="page family-page family-editor-page">${header({ showAction: false })}<button class="back-link" data-action="cancel-family-edit">${icon("back")} Family Account</button><div class="page-title-row"><div><h1 class="page-title">${title}</h1><p class="page-subtitle">${isMember ? "Update this profile’s name, school role, grade, and tribe." : "Update the name shown throughout your family account."}</p></div></div>${form}</section>`;
+  return `<section class="page family-page family-editor-page">${header({ showAction: false })}<button class="back-link" data-action="cancel-family-edit">${icon("back")} Family Account</button><div class="page-title-row"><div><h1 class="page-title">${title}</h1><p class="page-subtitle">${isMember ? "Update this profile’s name, school role, grade, and tribe." : "Update your family details and account settings."}</p></div></div>${form}</section>`;
+}
+
+function renderFamilyMembersManager(familyRoles) {
+  const addDraft = familyAddMemberDraft || {};
+  const owner = state.family.members.find((member) => member.accountType === "owner" || member.id === authUser?.uid);
+  const pinFormMember = state.family.members.find((member) => member.id === state.pinManagementMemberId);
+  const pinLength = pinFormMember ? Number(pinFormMember.pinLength || (pinFormMember.accountType === "owner" ? 6 : 4)) : 4;
+  const pinManagementForm = ["managed", "owner"].includes(pinFormMember?.accountType) ? `<form id="family-pin-form" data-member-id="${esc(pinFormMember.id)}" data-pin-length="${pinLength}" class="card pin-form family-pin-management-form"><h3>${pinFormMember.accountType === "owner" ? "Family account holder" : esc(pinFormMember.name)} · ${pinFormMember.pinConfigured ? "Change" : "Set"} PIN</h3><p class="item-subtitle">Use a ${pinLength}-digit number. Five incorrect attempts temporarily lock PIN entry.</p><div class="form-field"><label for="family-pin">New ${pinLength}-digit PIN</label><input id="family-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{${pinLength}}" minlength="${pinLength}" maxlength="${pinLength}" autocomplete="new-password" required placeholder="${pinLength}-digit PIN"></div><div class="form-field"><label for="family-pin-confirm">Confirm PIN</label><input id="family-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{${pinLength}}" minlength="${pinLength}" maxlength="${pinLength}" autocomplete="new-password" required placeholder="Enter it again"></div><div class="pin-form-actions"><button class="button primary" type="submit">Save PIN</button><button class="button ghost" type="button" data-action="cancel-member-pin">Cancel</button></div></form>` : "";
+  const memberForm = state.addingMember ? familyAddMemberPinStep ? `<form id="family-member-pin-form" class="card family-member-form family-member-pin-step"><h3>Set PIN for ${esc(addDraft.name || "this profile")}</h3><p class="item-subtitle">Choose a four-digit PIN. It will be required when opening this family member’s profile.</p><div class="form-field"><label for="member-pin">Four-digit PIN</label><input id="member-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" required placeholder="Enter 4 digits"></div><div class="form-field"><label for="member-pin-confirm">Confirm PIN</label><input id="member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" required placeholder="Enter it again"></div><div class="family-member-form-actions"><button class="button primary" type="submit">Set PIN</button><button class="button ghost" type="button" data-action="back-member-pin-step">Back</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : `<form id="family-member-form" class="card family-member-form"><div class="form-field"><label for="member-account-type">Account type</label><select id="member-account-type" name="accountType"><option value="managed" ${addDraft.accountType !== "linked" ? "selected" : ""}>Managed subaccount · shares this login</option><option value="linked" ${addDraft.accountType === "linked" ? "selected" : ""} ${state.family.allowLinkedAccounts === false ? "disabled" : ""}>Link a personal account</option></select>${state.family.allowLinkedAccounts === false ? `<span class="item-subtitle">Linked accounts are turned off in family permissions.</span>` : ""}</div><div class="form-field"><label for="member-name">Full name</label><input id="member-name" name="name" value="${esc(addDraft.name || "")}" required placeholder="Family member name"></div><div class="form-field ${addDraft.accountType === "linked" ? "" : "hide"}" id="member-email-field"><label for="member-email">Personal account email</label><input id="member-email" name="email" value="${esc(addDraft.email || "")}" type="email" autocomplete="off" ${addDraft.accountType === "linked" ? "required" : ""} placeholder="member@example.com"><span class="item-subtitle">They sign in with their own account. Linking does not create a duplicate profile.</span></div><div class="form-field"><label for="member-role">Role</label><select id="member-role" name="role">${familyRoles.map((role) => `<option ${addDraft.role === role || (!addDraft.role && role === "Student") ? "selected" : ""}>${role}</option>`).join("")}</select></div><div class="form-field"><label for="member-grade">Grade (optional)</label><input id="member-grade" name="grade" value="${esc(addDraft.grade || "")}" placeholder="e.g. Grade 6"></div><div class="form-field"><label for="member-tribe">Tribe</label><select id="member-tribe" name="tribe">${familyTribes.map((tribe) => `<option ${addDraft.tribe === tribe || (!addDraft.tribe && tribe === "Lamanites") ? "selected" : ""}>${tribe}</option>`).join("")}</select></div><div class="family-member-form-actions"><button class="button primary" type="submit">${addDraft.accountType === "linked" ? "Add or Invite" : "Set PIN"}</button><button class="button ghost" type="button" data-action="cancel-member">Cancel</button></div></form>` : "";
+  const managementRows = state.family.members.map((member, index) => {
+    const ownerMember = member.accountType === "owner" || member.id === authUser?.uid || member.note === "Account Holder";
+    const detail = [member.role, ownerMember ? "Account Holder" : (member.grade || member.note), member.tribe ? `Tribe: ${member.tribe}` : ""].filter(Boolean).join(" · ");
+    const controls = member.accountType === "managed"
+      ? `<button class="button ghost" data-action="edit-member" data-id="${esc(member.id)}">Edit</button><button class="button ghost" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button><button class="button ghost" data-action="make-member-independent" data-id="${esc(member.id)}">Create login</button><button class="button ghost danger-text" data-action="remove-family-member" data-id="${esc(member.id)}">Remove</button>`
+      : member.accountType === "linked" ? `<button class="button ghost danger-text" data-action="remove-family-member" data-id="${esc(member.id)}">Unlink account</button>`
+        : `<button class="button ghost" data-action="manage-member-pin" data-id="${esc(member.id)}">${member.pinConfigured ? "Change PIN" : "Set PIN"}</button>`;
+    return `<article class="family-managed-member card"><div class="family-manager-row"><span class="family-person-avatar tone-${index % 6}">${icon("user")}</span><span class="item-copy"><span class="item-title">${esc(member.name)}</span><span class="family-member-role">${esc(detail)}</span>${member.accountType === "linked" ? `<span class="family-member-badge linked">${icon("link")}Linked account</span>` : ""}</span><span class="family-member-indicator">${icon("chevron")}</span></div><div class="family-member-actions">${controls}</div></article>`;
+  }).join("");
+  const holderPin = owner ? `<div class="card family-holder-pin"><span class="family-permission-icon">${icon("shield")}</span><span class="family-permission-copy"><strong>Family account holder PIN</strong><small>${owner.pinConfigured ? "The holder profile is protected by a PIN." : "Set a PIN before switching into the account holder profile."}</small></span><button class="button ghost" data-action="manage-member-pin" data-id="${esc(owner.id)}">${owner.pinConfigured ? "Change PIN" : "Set PIN"}</button></div>` : "";
+  return `<section class="page family-page family-manager-page">${header({ showAction: false })}<button class="back-link" data-action="family-manager-back">${icon("back")} Edit Family</button><div class="page-title-row"><div><h1 class="page-title">Manage Members</h1><p class="page-subtitle">Add or remove family members, manage roles, and view their accounts.</p></div></div><div class="family-summary card"><span class="item-icon family-summary-icon">${icon("home")}</span><div class="family-copy"><h2>${esc(state.family.name)}</h2><p>${state.family.members.length} family ${state.family.members.length === 1 ? "member" : "members"}</p></div><button class="button ghost" data-action="edit-family-details">Edit</button></div>${holderPin}${pinManagementForm}${memberForm}<div class="family-section-heading"><h2>Family Members</h2><button class="button lavender family-add-button" data-action="add-member">${icon("plus")} Add Family Member</button></div><div class="family-managed-list">${managementRows}</div></section>`;
 }
 
 const familyTribes = ["Lamanites", "Nephites", "Jaredites", "Mulekites"];
@@ -844,7 +853,14 @@ function connectDataListeners(sessionRevision = authSessionRevision) {
     familyUnsubscribe = backend.subscribeFamily(activeFamilyId, (family) => {
       if (!isCurrentScope()) return;
       if (family) {
-        state.family = { ...state.family, name: family.name || "Family Account", tribe: family.tribe || "Lamanites" };
+        state.family = {
+          ...state.family,
+          name: family.name || "Family Account",
+          tribe: family.tribe || "Lamanites",
+          description: family.description || "",
+          allowLinkedAccounts: family.allowLinkedAccounts !== false,
+          requireChildPin: family.requireChildPin !== false
+        };
         persist(); if (["family", "account", "family-owner-pin"].includes(state.page)) render();
       }
     }, (error) => { if (isCurrentScope()) showListenerError("Family account", error); });
@@ -914,7 +930,7 @@ async function handleAuthUser(user, revision = null, force = false) {
   stopListeners();
   state.isDemoSignedIn = false;
   state.error = "";
-  state.family = { name: "Family Account", tribe: "Lamanites", members: [] };
+  state.family = { name: "Family Account", tribe: "Lamanites", description: "", allowLinkedAccounts: true, requireChildPin: true, members: [] };
   state.conversations = []; state.messages = {}; state.activeConversationId = null;
   state.classes = []; state.events = []; state.pendingUsers = [];
   state.joinedRequests = []; state.classJoinRequests = []; state.selectedPersonIds = []; state.pinnedConversationIds = [];
@@ -1131,7 +1147,7 @@ async function finishFamilySetup() {
     }));
     familyLink = { familyId, memberId: authUser.uid, accountType: "owner", status: "active" };
     activeFamilyId = familyId;
-    state.family = { name: draft.name.trim(), tribe: draft.tribe, members: [owner, ...managedMembers] };
+    state.family = { name: draft.name.trim(), tribe: draft.tribe, description: "", allowLinkedAccounts: true, requireChildPin: true, members: [owner, ...managedMembers] };
     state.activeMemberId = authUser.uid;
     if (userProfile) {
       userProfile.activeMemberId = authUser.uid;
@@ -1238,6 +1254,24 @@ async function handleClick(event) {
           break;
         }
         if (remoteMode && authUser && member.accountType === "managed") {
+          const pinRequired = String(member.role || "").toLowerCase() !== "student" || state.family.requireChildPin !== false;
+          if (!pinRequired) {
+            try {
+              if (state.activeMemberId !== authUser.uid) {
+                const owner = state.family.members.find((entry) => entry.id === authUser.uid);
+                await backend.setActiveMember(authUser.uid, authUser.uid);
+                userProfile.activeMemberId = authUser.uid;
+                if (owner) localSwitchToMember(owner);
+                connectDataListeners();
+              }
+              await backend.selectFamilyMemberWithoutPin(activeFamilyId, member.id);
+              userProfile.activeMemberId = member.id;
+              localSwitchToMember(member);
+              state.page = "home"; persist(); connectDataListeners(); render();
+              showToast(`Switched to ${member.name}.`);
+            } catch (error) { showFirebaseError("Switch to family profile", error); }
+            break;
+          }
           if (!member.pinConfigured) {
             try {
               if (state.activeMemberId !== authUser.uid) {
@@ -1288,7 +1322,29 @@ async function handleClick(event) {
       if (!remoteMode && roles.includes(role)) { state.currentUser.role = role; persist(); render(); showToast(`Previewing ${role} view`); }
       break;
     case "family": state.page = "family"; render(); break;
-    case "cancel-family-edit": familyEditor = null; render(); break;
+    case "cancel-family-edit":
+      if (familyEditor?.type === "member" && familyEditor.returnTo === "family-members") familyEditor = { type: "family-members" };
+      else { familyEditor = null; familyEditorDraft = null; }
+      render(); break;
+    case "family-manage-members":
+      if (!familyEditorDraft) familyEditorDraft = {
+        name: state.family.name || "", description: state.family.description || "",
+        allowLinkedAccounts: state.family.allowLinkedAccounts !== false, requireChildPin: state.family.requireChildPin !== false
+      };
+      if (familyEditor?.type === "family") familyEditor = { type: "family-members" };
+      state.addingMember = false; state.pinManagementMemberId = null; render(); break;
+    case "family-manager-back":
+      if (!familyEditorDraft) familyEditorDraft = {
+        name: state.family.name || "", description: state.family.description || "",
+        allowLinkedAccounts: state.family.allowLinkedAccounts !== false, requireChildPin: state.family.requireChildPin !== false
+      };
+      familyEditor = { type: "family" }; state.addingMember = false; state.pinManagementMemberId = null; render(); break;
+    case "edit-family-details":
+      if (!familyEditorDraft) familyEditorDraft = {
+        name: state.family.name || "", description: state.family.description || "",
+        allowLinkedAccounts: state.family.allowLinkedAccounts !== false, requireChildPin: state.family.requireChildPin !== false
+      };
+      familyEditor = { type: "family" }; state.addingMember = false; state.pinManagementMemberId = null; render(); break;
     case "family-setup-exit":
       familySetupDraft = null; familySetupMemberDraft = null; familySetupEditingIndex = null; familySetupView = "create"; familySetupNextAfterPin = "members";
       state.page = "home"; state.activeTab = "settings"; render(); break;
@@ -1410,17 +1466,27 @@ async function handleClick(event) {
       break;
     }
     case "add-member":
+      if (!canManageFamilyAccount()) break;
+      familyEditor = { type: "family-members" };
       familyAddMemberDraft = { name: "", role: "Student", grade: "", tribe: "Lamanites", accountType: "managed", email: "" };
       familyAddMemberPinStep = false; state.addingMember = true; render(); break;
     case "cancel-member":
       familyAddMemberDraft = null; familyAddMemberPinStep = false; state.addingMember = false; render(); break;
     case "back-member-pin-step": familyAddMemberPinStep = false; state.addingMember = true; render(); break;
     case "edit-family":
-      if (!remoteMode || (familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid)) { familyEditor = { type: "family" }; state.addingMember = false; state.pinManagementMemberId = null; render(); }
+      if (canManageFamilyAccount()) {
+        familyEditorDraft = {
+          name: state.family.name || "",
+          description: state.family.description || "",
+          allowLinkedAccounts: state.family.allowLinkedAccounts !== false,
+          requireChildPin: state.family.requireChildPin !== false
+        };
+        familyEditor = { type: "family" }; state.addingMember = false; state.pinManagementMemberId = null; render();
+      }
       break;
     case "edit-member": {
       const member = state.family.members.find((entry) => entry.id === id);
-      if (member?.accountType === "managed" && (!remoteMode || (familyLink?.accountType === "owner" && activeIdentityId() === authUser?.uid))) { familyEditor = { type: "member", memberId: id }; state.addingMember = false; state.pinManagementMemberId = null; render(); }
+      if (member?.accountType === "managed" && canManageFamilyAccount()) { familyEditor = { type: "member", memberId: id, returnTo: familyEditor?.type === "family-members" ? "family-members" : null }; state.addingMember = false; state.pinManagementMemberId = null; render(); }
       break;
     }
     case "make-member-independent": {
@@ -1554,8 +1620,17 @@ function updatePinPad() {
   if (submit) submit.disabled = count !== pinLength;
 }
 
+function syncFamilyEditDraft(target) {
+  if (target?.form?.id !== "family-edit-form" || !familyEditorDraft) return false;
+  if (target.name === "name") familyEditorDraft.name = target.value;
+  else if (target.name === "description") familyEditorDraft.description = target.value;
+  else if (target.name === "allowLinkedAccounts" || target.name === "requireChildPin") familyEditorDraft[target.name] = target.checked;
+  return true;
+}
+
 function handleInput(event) {
   const target = event.target;
+  if (syncFamilyEditDraft(target)) return;
   if (target.id === "message-search") {
     state.search = target.value;
     const list = $("#conversation-list");
@@ -1604,13 +1679,20 @@ async function handleSubmit(event) {
   if (form.id === "family-edit-form") {
     const name = String(data.get("name") || "").trim();
     if (!name) { showToast("Enter a family name."); return; }
+    const updates = {
+      name,
+      description: String(data.get("description") || "").trim(),
+      allowLinkedAccounts: data.get("allowLinkedAccounts") === "on",
+      requireChildPin: data.get("requireChildPin") === "on"
+    };
     if (backend?.enabled && activeFamilyId) {
-      try { await backend.updateFamily(activeFamilyId, { name }); }
-      catch (error) { showFirebaseError("Save family name", error); return; }
+      try { await backend.updateFamily(activeFamilyId, updates); }
+      catch (error) { showFirebaseError("Save family settings", error); return; }
     }
-    state.family.name = name;
+    Object.assign(state.family, updates);
     familyEditor = null;
-    persist(); render(); showToast("Family name updated.");
+    familyEditorDraft = null;
+    persist(); render(); showToast("Family settings updated.");
   } else if (form.id === "family-member-edit-form") {
     const memberId = form.dataset.memberId;
     const member = state.family.members.find((entry) => entry.id === memberId);
@@ -1625,7 +1707,7 @@ async function handleSubmit(event) {
     try {
       if (backend?.enabled && activeFamilyId) await backend.updateFamilyMember(activeFamilyId, memberId, { name, role, grade, tribe });
       Object.assign(member, { name, role, grade, note: grade, tribe, initials: name.split(/\s+/).map((part) => part[0]).slice(0,2).join("") });
-      familyEditor = null; persist(); render(); showToast("Family profile updated.");
+      familyEditor = familyEditor?.returnTo === "family-members" ? { type: "family-members" } : null; persist(); render(); showToast("Family profile updated.");
     } catch (error) { showFirebaseError("Update family profile", error); }
   } else if (form.id === "profile-form") {
     const name = String(data.get("name") || "").trim();
@@ -1645,7 +1727,7 @@ async function handleSubmit(event) {
       state.currentUser.initials = name.split(/\s+/).map((part) => part[0]).slice(0,2).join("");
       persist(); showToast("Profile saved."); render();
     }
-  } else if (form.id === "family-member-form") {
+      } else if (form.id === "family-member-form") {
     const name = String(data.get("name") || "").trim();
     if (!name) return;
     const role = String(data.get("role") || "Student");
@@ -1962,6 +2044,7 @@ document.addEventListener("input", handleInput);
 document.addEventListener("submit", (event) => { handleSubmit(event).catch((error) => showToast(error.message || "Something went wrong.")); });
 document.addEventListener("change", (event) => {
   const target = event.target;
+  if (syncFamilyEditDraft(target)) return;
   if (target.id === "file-picker") { handleFileChange(event); return; }
   if (target.id === "requested-role") {
     const familyChoice = $("#signup-family-choice");
@@ -1983,7 +2066,7 @@ document.addEventListener("change", (event) => {
 });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=33").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=37").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;

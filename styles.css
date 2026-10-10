@@ -536,3 +536,177 @@ a { color: inherit; }
   .event-time { grid-template-columns: 1fr; font-size: 11px; }
   .event-row { grid-template-columns: 79px minmax(0,1fr); }
 }
+
+/* Family views match the phone and desktop family-account references. */
+.family-page { max-width: 1120px; gap: 0; }
+.family-title-row { align-items: center; margin: 8px 0 20px; }
+.family-title-row .page-subtitle { max-width: 720px; }
+.family-edit-title { display: none; }
+.family-edit-summary { display: inline-flex; }
+.family-summary { min-height: 102px; padding: 18px 20px; gap: 18px; margin: 0 0 24px; border: 1px solid #edf0fb; border-radius: 22px; box-shadow: 0 8px 22px rgba(77,93,150,.045); }
+.family-summary .family-summary-icon { width: 72px; height: 72px; background: #f0efff; color: #5968b1; }
+.family-summary .family-summary-icon .icon { width: 34px; height: 34px; }
+.family-summary h2 { font-size: 20px; margin-bottom: 4px; }
+.family-summary p { font-size: 14px; }
+.family-summary .button { min-height: 46px; padding: 0 18px; border-radius: 999px; font-size: 14px; }
+.family-section-heading { margin: 20px 0 12px; }
+.family-section-heading h2 { font-size: 21px; }
+.family-add-button { min-height: 48px; padding: 0 17px; font-size: 14px; white-space: nowrap; }
+.family-managed-list { gap: 9px; }
+.family-managed-member { padding: 0; border: 1px solid #edf0fb; border-radius: 18px; box-shadow: 0 6px 18px rgba(77,93,150,.04); }
+.family-member-select { min-height: 78px; grid-template-columns: 58px minmax(0,1fr) 22px; gap: 13px; padding: 10px 16px; border-radius: inherit; }
+.family-member-select.active { background: transparent; }
+.family-member-select:hover { background: #fafaff; }
+.family-person-avatar, .family-about-icon { display: grid; place-items: center; width: 54px; height: 54px; flex: 0 0 auto; border-radius: 50%; background: #efedff; color: #4b5ca8; }
+.family-person-avatar .icon { width: 27px; height: 27px; fill: currentColor; stroke: currentColor; }
+.family-person-avatar.tone-1 { color: #c64189; background: #fde9f3; }
+.family-person-avatar.tone-2 { color: #348be5; background: #e1f0ff; }
+.family-person-avatar.tone-3 { color: #199b80; background: #def8ed; }
+.family-person-avatar.tone-4 { color: #e59b0b; background: #fff3cf; }
+.family-person-avatar.tone-5 { color: #833bdd; background: #f1e6ff; }
+.family-member-select .item-copy { display: block; }
+.family-member-select .item-title { font-size: 16px; font-weight: 700; }
+.family-member-role { margin-top: 4px; color: #7c8bb3; font-size: 13px; }
+.family-member-tribe { display: flex; align-items: center; gap: 4px; margin-top: 3px; color: #7987b0; font-size: 12px; }
+.family-member-tribe .icon { width: 14px; height: 14px; fill: currentColor; stroke: currentColor; }
+.family-member-indicator { color: #7887b2; }
+.family-member-indicator .icon { width: 20px; height: 20px; }
+.family-member-badge { margin-top: 4px; }
+.family-about { display: flex; align-items: center; gap: 14px; margin: 20px 0 0; padding: 17px; background: #efedff; }
+.family-about-icon { width: 52px; height: 52px; border-radius: 15px; background: #e4e1ff; }
+.family-about-icon .icon { width: 27px; height: 27px; fill: currentColor; stroke: currentColor; }
+.family-about > div { min-width: 0; flex: 1; }
+.family-about strong { margin: 0 0 3px; font-size: 15px; }
+.family-about span { color: #7685ae; font-size: 13px; line-height: 1.45; }
+.family-about > .row-chevron { width: 18px; height: 18px; margin: 0; }
+.family-editor-page .page-title-row { margin: 8px 0 20px; }
+.family-edit-content { display: grid; gap: 18px; padding-bottom: 18px; }
+.family-information-card, .family-permissions { padding: 17px; border: 1px solid #edf0fb; border-radius: 20px; }
+.family-information-card > h2, .family-permissions > h2 { margin: 0 0 14px; font-size: 18px; }
+.family-information-grid { display: grid; grid-template-columns: 84px minmax(0,1fr); align-items: center; gap: 12px; }
+.family-information-icon { display: grid; place-items: center; width: 78px; height: 78px; border-radius: 50%; color: #6475c1; background: #efedff; }
+.family-information-icon .icon { width: 42px; height: 42px; fill: currentColor; stroke: currentColor; }
+.family-information-fields { display: grid; gap: 10px; min-width: 0; }
+.family-edit-field { display: grid; grid-template-columns: minmax(120px, 185px) minmax(0,1fr); align-items: center; gap: 12px; min-width: 0; }
+.family-edit-field label { color: #4b5883; font-size: 13px; }
+.family-edit-field input, .family-edit-field textarea, .family-edit-field select { width: 100%; min-width: 0; min-height: 43px; padding: 9px 12px; border: 1px solid #dfe4f5; border-radius: 12px; outline-color: #9a7bff; background: #fff; color: var(--ink); font-size: 14px; }
+.family-edit-field textarea { min-height: 62px; resize: vertical; line-height: 1.45; }
+.family-edit-field input:disabled, .family-edit-field select:disabled { color: #8390bc; background: #f1efff; opacity: 1; }
+.family-edit-field select:disabled { appearance: none; padding-right: 36px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237c8bb3' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 13px center; background-size: 16px; }
+.family-subheading { margin: 3px 0 -8px; font-size: 18px; }
+.family-manage-members-link { display: flex; align-items: center; gap: 13px; width: 100%; padding: 14px; border: 1px solid #edf0fb; border-radius: 18px; background: rgba(255,255,255,.88); text-align: left; box-shadow: 0 5px 18px rgba(77,93,150,.04); }
+.family-manage-members-link > span:nth-child(2) { display: grid; flex: 1; gap: 4px; }
+.family-manage-members-link strong { font-size: 15px; }
+.family-manage-members-link small { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.family-permissions { padding-bottom: 5px; }
+.family-permission-row { display: flex; align-items: center; gap: 13px; min-height: 78px; padding: 9px 2px; }
+.family-permission-row + .family-permission-row { border-top: 1px solid #edf0fb; }
+.family-permission-icon { display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border-radius: 50%; background: #f0efff; color: #5d31e8; }
+.family-permission-icon .icon { width: 25px; height: 25px; }
+.family-permission-copy { display: grid; flex: 1; gap: 4px; min-width: 0; }
+.family-permission-copy strong { font-size: 14px; }
+.family-permission-copy small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.family-permission-row input[type="checkbox"] { appearance: none; position: relative; width: 54px; height: 30px; flex: 0 0 auto; margin: 0 3px 0 8px; border: 0; border-radius: 999px; background: #cbd2e4; cursor: pointer; transition: background .16s ease; }
+.family-permission-row input[type="checkbox"]::before { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px #2223; content: ""; transition: transform .16s ease; }
+.family-permission-row input[type="checkbox"]:checked { background: linear-gradient(110deg, #711fff, #511fe8); }
+.family-permission-row input[type="checkbox"]:checked::before { transform: translateX(24px); }
+.family-permission-row input[type="checkbox"]:focus-visible { outline: 3px solid #a590ff; outline-offset: 3px; }
+.family-editor-actions { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr); gap: 10px; margin-top: 10px; }
+.family-editor-actions .button { min-height: 52px; font-size: 15px; }
+.family-manager-row { display: grid; grid-template-columns: 54px minmax(0,1fr) 22px; align-items: center; gap: 13px; padding: 13px 15px; }
+.family-manager-row .item-copy { display: grid; gap: 4px; }
+.family-holder-pin { display: flex; align-items: center; gap: 12px; padding: 13px; }
+.family-holder-pin .family-permission-copy { flex: 1; }
+.family-holder-pin .button { white-space: nowrap; }
+.family-manager-page .family-summary { margin-bottom: 14px; }
+.family-manager-page .family-member-actions { display: flex; flex-wrap: wrap; padding: 0 14px 13px 81px; border: 0; }
+.family-manager-page .family-member-actions .button { min-height: 36px; }
+
+@media (max-width: 560px) {
+  .family-page { padding-bottom: 112px; }
+  .family-title-row { margin: 4px 0 16px; }
+  .family-title-row .page-title { font-size: 25px; }
+  .family-title-row .page-subtitle { margin-top: 6px; font-size: 14px; }
+  .family-edit-title { display: none; }
+  .family-edit-summary { display: inline-flex; min-height: 40px; padding: 0 12px !important; font-size: 12px !important; }
+  .family-edit-summary .icon { display: inline-block !important; width: 16px !important; height: 16px !important; }
+  .family-summary { min-height: 84px; padding: 12px; gap: 11px; margin-bottom: 19px; border-radius: 18px; }
+  .family-summary .family-summary-icon { width: 52px; height: 52px; }
+  .family-summary .family-summary-icon .icon { width: 26px; height: 26px; }
+  .family-summary h2 { font-size: 16px; }
+  .family-summary p { font-size: 12px; }
+  .family-section-heading { align-items: center; margin: 12px 0 10px; }
+  .family-section-heading h2 { font-size: 18px; }
+  .family-add-button { min-height: 42px; padding: 0 11px; font-size: 12px; }
+  .family-managed-list { gap: 8px; }
+  .family-managed-member { border-radius: 17px; }
+  .family-member-select { min-height: 70px; grid-template-columns: 48px minmax(0,1fr) 19px; gap: 11px; padding: 9px 12px; }
+  .family-person-avatar { width: 48px; height: 48px; }
+  .family-person-avatar .icon { width: 24px; height: 24px; }
+  .family-member-select .item-title { font-size: 15px; }
+  .family-member-role { font-size: 12px; }
+  .family-about { gap: 10px; padding: 12px; }
+  .family-about-icon { width: 42px; height: 42px; border-radius: 13px; }
+  .family-about-icon .icon { width: 23px; height: 23px; }
+  .family-about strong { font-size: 13px; }
+  .family-about span { font-size: 11px; }
+  .family-information-card, .family-permissions { padding: 13px; }
+  .family-information-card > h2, .family-permissions > h2 { font-size: 16px; margin-bottom: 10px; }
+  .family-information-grid { grid-template-columns: 62px minmax(0,1fr); gap: 8px; }
+  .family-information-icon { width: 58px; height: 58px; }
+  .family-information-icon .icon { width: 33px; height: 33px; }
+  .family-information-fields { gap: 8px; }
+  .family-edit-field { grid-template-columns: minmax(78px, 34%) minmax(0,1fr); gap: 7px; }
+  .family-edit-field label { font-size: 11px; }
+  .family-edit-field input, .family-edit-field textarea, .family-edit-field select { min-height: 40px; padding: 8px; font-size: 12px; }
+  .family-edit-field textarea { min-height: 62px; }
+  .family-subheading { font-size: 16px; }
+  .family-manage-members-link { gap: 9px; padding: 11px; }
+  .family-manage-members-link .family-about-icon { width: 42px; height: 42px; }
+  .family-manage-members-link strong { font-size: 13px; }
+  .family-manage-members-link small { font-size: 11px; }
+  .family-permission-row { gap: 9px; min-height: 72px; }
+  .family-permission-icon { width: 42px; height: 42px; }
+  .family-permission-icon .icon { width: 21px; height: 21px; }
+  .family-permission-copy strong { font-size: 12px; }
+  .family-permission-copy small { font-size: 10px; }
+  .family-permission-row input[type="checkbox"] { width: 47px; height: 27px; margin-left: 3px; }
+  .family-permission-row input[type="checkbox"]::before { width: 21px; height: 21px; }
+  .family-permission-row input[type="checkbox"]:checked::before { transform: translateX(20px); }
+  .family-editor-actions { position: sticky; z-index: 8; bottom: calc(76px + env(safe-area-inset-bottom)); margin: 2px -14px 0; padding: 12px 14px; border-top: 1px solid #e9edfa; background: rgba(250,251,255,.95); backdrop-filter: blur(14px); }
+  .family-editor-actions .button { min-height: 48px; padding: 0 9px; font-size: 13px; }
+  .family-manager-page .family-member-actions { padding-left: 12px; }
+  .family-holder-pin { flex-wrap: wrap; }
+  .family-holder-pin .family-permission-copy { min-width: calc(100% - 65px); }
+  .family-holder-pin .button { margin-left: auto; }
+}
+
+@media (min-width: 760px) {
+  .family-page { padding-top: 0; }
+  .family-page:not(.family-editor-page):not(.family-manager-page) > .back-link { display: none; }
+  .family-page .mobile-header .brand { display: none; }
+  .family-page .mobile-header { justify-content: flex-end; min-height: 70px; padding-top: 14px; }
+  .family-page > .back-link { margin-top: 4px; }
+  .family-title-row { margin-top: 3px; }
+  .family-title-row .page-title { font-size: 30px; }
+  .family-edit-title { display: inline-flex; min-height: 44px; padding: 0 17px; border-radius: 14px; }
+  .family-edit-summary { display: none; }
+  .family-summary { min-height: 100px; padding: 16px 19px; margin-bottom: 16px; }
+  .family-section-heading { margin-top: 18px; }
+  .family-section-heading h2 { font-size: 20px; }
+  .family-managed-list { gap: 2px; }
+  .family-managed-member { border-radius: 17px; }
+  .family-member-select { min-height: 70px; grid-template-columns: 54px minmax(0,1fr) 21px; padding: 8px 15px; }
+  .family-person-avatar { width: 50px; height: 50px; }
+  .family-member-select .item-title { font-size: 15px; }
+  .family-member-role { margin-top: 2px; font-size: 13px; }
+  .family-about { margin-top: 19px; padding: 17px; }
+  .family-information-card, .family-permissions { padding: 17px 20px; }
+  .family-information-grid { grid-template-columns: 120px minmax(0,1fr); gap: 20px; }
+  .family-information-icon { width: 100px; height: 100px; }
+  .family-edit-field { grid-template-columns: minmax(170px, 235px) minmax(0,1fr); }
+  .family-edit-field input, .family-edit-field textarea, .family-edit-field select { min-height: 46px; }
+  .family-edit-field textarea { min-height: 65px; }
+  .family-permission-row { min-height: 77px; }
+  .family-editor-actions { justify-self: end; width: min(100%, 500px); margin-top: 0; }
+}

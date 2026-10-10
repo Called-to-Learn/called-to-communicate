@@ -1,4 +1,4 @@
-import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=5";
+import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=7";
 
 const FIREBASE_VERSION = "12.19.0";
 const sdk = (service) => import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-${service}.js`);
@@ -346,8 +346,16 @@ export async function connectFirebase(onAuthChanged, onError) {
         });
         return result.data;
       },
+      selectFamilyMemberWithoutPin: async (familyId, memberId) => {
+        const functionsSDK = await sdk("functions");
+        const functions = functionsSDK.getFunctions(app, "us-central1");
+        const result = await functionsSDK.httpsCallable(functions, "createFamilyAccount")({
+          operation: "select-family-profile-without-pin", familyId, memberId, identityId: auth.currentUser?.uid
+        });
+        return result.data;
+      },
       setActiveMember: async (uid, memberId) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "users", uid), { activeMemberId: memberId }),
-      updateFamily: async (familyId, updates) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "families", familyId), updates),
+      updateFamily: async (familyId, updates) => firestoreSDK.updateDoc(firestoreSDK.doc(db, "families", familyId), { ...updates, updatedAt: firestoreSDK.serverTimestamp() }),
       addFamilyMember: async (familyId, member) => {
         const uid = auth.currentUser?.uid;
         if (!uid) throw new Error("Sign in to manage this family.");
@@ -356,6 +364,7 @@ export async function connectFirebase(onAuthChanged, onError) {
         if (!familySnapshot.exists() || familySnapshot.data().ownerUid !== uid) throw new Error("Only the family account holder can manage its members.");
         const now = firestoreSDK.serverTimestamp();
         if (member.accountType === "linked") {
+          if (familySnapshot.data().allowLinkedAccounts === false) throw new Error("Linked personal accounts are disabled in this family’s settings.");
           if (!member.email) throw new Error("Enter the email used by the personal account.");
           const inviteRef = firestoreSDK.doc(firestoreSDK.collection(db, "familyInvites"));
           await firestoreSDK.setDoc(inviteRef, {

@@ -457,11 +457,15 @@ async function createFamilyAccountRecord(uid, user, data) {
 
     const displayName = String(currentUser.displayName || currentProfile.displayName || "Family Account Holder").trim();
     const familyData = familySnapshot.exists ? familySnapshot.data() : null;
+    if (familyData?.allowLinkedAccounts === false && inviteEntries.length) {
+      throw new HttpsError("failed-precondition", "Linked personal accounts are disabled in this family’s settings.");
+    }
     const memberIds = managedEntries.map((entry) => entry.memberRef.id);
     if (!familySnapshot.exists) {
       transaction.create(familyRef, {
         name, tribe, ownerUid: uid, managerUids: [uid], memberIds: [uid, ...memberIds], memberUids: [uid],
-        memberCount: 1 + managedEntries.length, schoolId: "ctla", createdAt: now
+        memberCount: 1 + managedEntries.length, schoolId: "ctla", description: "",
+        allowLinkedAccounts: true, requireChildPin: true, createdAt: now
       });
     } else {
       transaction.set(familyRef, {
@@ -656,6 +660,39 @@ async function selectFamilyMemberWithPin(uid, user, data) {
   return { selected: true, memberId };
 }
 
+async function selectFamilyMemberWithoutPin(uid, user, data) {
+  const familyId = String(data.familyId || "");
+  const memberId = String(data.memberId || "");
+  validateFamilyPinRequest(familyId, memberId);
+  if (data.identityId !== uid) throw new HttpsError("permission-denied", "Sign in as the family account holder to switch profiles.");
+
+  const familyRef = db.doc(`families/${familyId}`);
+  const memberRef = db.doc(`families/${familyId}/members/${memberId}`);
+  const profileRef = db.doc(`profiles/${memberId}`);
+  const userRef = db.doc(`users/${uid}`);
+  await db.runTransaction(async (transaction) => {
+    const [familySnapshot, memberSnapshot, profileSnapshot, userSnapshot] = await Promise.all([
+      transaction.get(familyRef), transaction.get(memberRef), transaction.get(profileRef), transaction.get(userRef)
+    ]);
+    const family = familySnapshot.data() || {};
+    const member = memberSnapshot.data() || {};
+    const profile = profileSnapshot.data() || {};
+    const currentUser = userSnapshot.data() || {};
+    if (!familySnapshot.exists || family.ownerUid !== uid || family.requireChildPin !== false
+        || !memberSnapshot.exists || !profileSnapshot.exists
+        || member.accountType !== "managed" || String(member.role || "").toLowerCase() !== "student"
+        || member.ownerUid !== uid || member.status !== "active"
+        || profile.accountType !== "managed" || profile.ownerUid !== uid || profile.managerUid !== uid
+        || profile.familyId !== familyId || profile.status !== "active"
+        || !userSnapshot.exists || currentUser.status !== "active" || currentUser.schoolId !== "ctla"
+        || currentUser.activeMemberId !== uid || !["parent", "admin"].includes(String(currentUser.role || user.role || "").toLowerCase())) {
+      throw new HttpsError("permission-denied", "PIN-free access is disabled or this is not an active child profile in your family.");
+    }
+    transaction.update(userRef, { activeMemberId: memberId, updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { selected: true, memberId };
+}
+
 async function removeManagedFamilyMember(uid, user, data) {
   const familyId = String(data.familyId || "");
   const memberId = String(data.memberId || "");
@@ -712,6 +749,9 @@ exports.createFamilyAccount = onCall({ region: "us-central1", maxInstances: 10 }
   }
   if (request.data?.operation === "select-family-profile") {
     return selectFamilyMemberWithPin(uid, user, request.data);
+  }
+  if (request.data?.operation === "select-family-profile-without-pin") {
+    return selectFamilyMemberWithoutPin(uid, user, request.data);
   }
   if (request.data?.operation === "remove-managed-member") {
     return removeManagedFamilyMember(uid, user, request.data);

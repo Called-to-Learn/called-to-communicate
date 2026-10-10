@@ -552,6 +552,7 @@ service cloud.firestore {
         && (resource.data.ownerUid == request.auth.uid
           || (request.auth.token.email is string && resource.data.email == request.auth.token.email.lower()));
       allow create: if familyManager(request.resource.data.familyId)
+        && get(/databases/$(database)/documents/families/$(request.resource.data.familyId)).data.get('allowLinkedAccounts', true) == true
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.email is string
@@ -707,7 +708,14 @@ service cloud.firestore {
       allow update: if familyManager(familyId)
         && request.resource.data.ownerUid == resource.data.ownerUid
         && request.resource.data.schoolId == resource.data.schoolId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'tribe', 'memberIds', 'memberCount', 'updatedAt'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name', 'tribe', 'description', 'allowLinkedAccounts', 'requireChildPin',
+          'memberIds', 'memberCount', 'updatedAt'
+        ])
+        && request.resource.data.get('description', '') is string
+        && request.resource.data.get('description', '').size() <= 400
+        && request.resource.data.get('allowLinkedAccounts', true) is bool
+        && request.resource.data.get('requireChildPin', true) is bool
         && request.resource.data.memberIds is list
         && request.resource.data.memberIds.size() <= 20
         && request.resource.data.memberCount == request.resource.data.memberIds.size();
