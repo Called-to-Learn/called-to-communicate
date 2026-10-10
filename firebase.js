@@ -20,7 +20,10 @@ export async function connectFirebase(onAuthChanged, onError) {
       ? { experimentalForceLongPolling: true }
       : {});
     const storage = storageSDK.getStorage(app);
-    await authSDK.setPersistence(auth, authSDK.browserLocalPersistence);
+    // Keep accounts isolated per tab. With local persistence Firebase shares
+    // the latest sign-in across every tab on this origin, which can silently
+    // switch a family member to a different school's account after a refresh.
+    await authSDK.setPersistence(auth, authSDK.browserSessionPersistence);
 
     const api = {
       enabled: true,

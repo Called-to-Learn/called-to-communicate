@@ -1,4 +1,4 @@
-import { connectFirebase, timestampToDate } from "./firebase.js?v=24";
+import { connectFirebase, timestampToDate } from "./firebase.js?v=25";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1878,7 +1878,7 @@ document.addEventListener("change", (event) => {
 });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=29").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=30").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
