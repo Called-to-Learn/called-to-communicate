@@ -138,6 +138,7 @@ let familySetupMemberDraft = null;
 let familySetupView = "create";
 let familySetupEditingIndex = null;
 let familySetupLinkOpen = false;
+let familySetupNextAfterPin = "members";
 
 const persist = () => {
   // Remote school records stay in Firebase's authenticated client cache, not shared browser storage.
@@ -489,18 +490,19 @@ function syncFamilySetupMemberDraft() {
   const form = $("#family-setup-member-form");
   if (!form) return;
   const data = new FormData(form);
+  const previous = familySetupMemberDraft || {};
   familySetupMemberDraft = {
-    ...(familySetupMemberDraft || {}), name: String(data.get("name") || ""), role: String(data.get("role") || "Student"),
+    ...previous, name: String(data.get("name") || ""), role: String(data.get("role") || "Student"),
     grade: String(data.get("grade") || ""), tribe: String(data.get("tribe") || "Lamanites"),
     accountType: String(data.get("accountType") || "managed"), email: String(data.get("email") || ""),
-    pin: String(data.get("pin") || ""), confirmPin: String(data.get("confirmPin") || "")
+    pin: previous.pin || "", confirmPin: previous.confirmPin || ""
   };
 }
 
 function renderFamilySetupMember(draft) {
   const member = familySetupMemberDraft || { name: "", role: "Student", grade: "", tribe: draft.tribe, accountType: "managed", email: "", pin: "", confirmPin: "" };
   const editing = Number.isInteger(familySetupEditingIndex);
-  const pinDots = Array.from({ length: 4 }, (_, index) => `<span class="family-pin-dot ${member.pin?.length > index ? "filled" : ""}"></span>`).join("");
+  const managed = member.accountType === "managed";
   return `${familySetupTop(editing ? "Edit Family Member" : "Add Family Member", "Create a profile for this family member before finishing setup.", 2, true)}
     <form id="family-setup-member-form" class="family-setup-content">
       ${familySetupSummary(draft)}
@@ -509,9 +511,21 @@ function renderFamilySetupMember(draft) {
       <div class="family-field-section"><label for="setup-member-grade">Grade <span>(Optional)</span></label><label class="family-select-field"><span class="family-field-icon">${icon("calendar")}</span><select id="setup-member-grade" name="grade"><option value="">Select grade</option>${["Kindergarten", ...Array.from({ length: 12 }, (_, i) => `Grade ${i + 1}`)].map((grade) => `<option ${member.grade === grade ? "selected" : ""}>${grade}</option>`).join("")}</select><span class="family-select-chevron">⌄</span></label></div>
       <div class="family-field-section"><label for="setup-member-tribe">Tribe</label><p>Assign a tribe for this family member.</p><label class="family-select-field"><span class="family-field-icon">${icon("users")}</span><select id="setup-member-tribe" name="tribe">${familyTribes.map((tribe) => `<option ${member.tribe === tribe ? "selected" : ""}>${tribe}</option>`).join("")}</select><span class="family-select-chevron">⌄</span></label></div>
       <div class="family-field-section"><h2>Account Type</h2><div class="family-account-type"><button type="button" class="${member.accountType === "managed" ? "selected" : ""}" data-action="family-setup-account-type" data-type="managed">Subaccount</button><button type="button" class="${member.accountType === "linked" ? "selected" : ""}" data-action="family-setup-account-type" data-type="linked">Link existing account</button></div></div>
-      ${member.accountType === "linked" ? `<div class="family-field-section"><label for="setup-member-email">Personal Account Email</label><div class="family-select-field"><span class="family-field-icon">@</span><input id="setup-member-email" name="email" value="${esc(member.email)}" type="email" required placeholder="member@example.com"></div><span class="family-field-note">They will sign in with their existing account. No duplicate profile is created.</span></div>` : `<div class="family-field-section"><h2>Create PIN</h2><div class="family-create-pin-card"><span class="family-pin-lock">${icon("shield")}</span><div class="family-pin-copy"><strong>4-digit PIN</strong><span>Set a PIN to protect this member’s profile</span></div><div class="family-pin-dots">${pinDots}</div></div><input class="family-pin-input" name="pin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" minlength="4" maxlength="4" value="${esc(member.pin)}" required aria-label="Create four digit PIN"><div class="family-pin-confirm"><label for="setup-member-pin-confirm">Confirm PIN</label><input id="setup-member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" minlength="4" maxlength="4" value="${esc(member.confirmPin)}" required placeholder="Enter the four digits again"></div><span class="family-field-note">PINs are stored securely and are required when opening this profile.</span></div>`}
-      <div class="family-setup-member-actions"><button type="submit" class="button primary wide" name="next" value="list">${editing ? "Save Family Member" : "Add Family Member"}</button><button type="button" class="family-link-toggle" data-action="family-setup-add-another">Add Another Member</button></div>
+      ${member.accountType === "linked" ? `<div class="family-field-section"><label for="setup-member-email">Personal Account Email</label><div class="family-select-field"><span class="family-field-icon">@</span><input id="setup-member-email" name="email" value="${esc(member.email)}" type="email" required placeholder="member@example.com"></div><span class="family-field-note">They will sign in with their existing account. No duplicate profile is created.</span></div>` : ""}
+      <div class="family-setup-member-actions"><button type="submit" class="button primary wide" name="next" value="${managed ? "set-pin" : "list"}">${managed ? "Set PIN" : (editing ? "Save Family Member" : "Add Family Member")}</button></div>
       <div class="family-setup-footer"><button type="button" class="button outline" data-action="family-setup-back">Back</button><button type="submit" class="button primary" name="next" value="review">Finish</button></div>
+    </form>`;
+}
+
+function renderFamilySetupPin(draft) {
+  const member = familySetupMemberDraft || {};
+  return `${familySetupTop("Set PIN", `Choose a PIN to protect ${member.name ? esc(member.name) + "’s" : "this member’s"} profile.`, 2, true)}
+    <form id="family-setup-pin-form" class="family-setup-content">
+      ${familySetupSummary(draft)}
+      <div class="family-next-card family-pin-step-card"><span class="family-next-icon">${icon("shield")}</span><div><strong>Keep this profile private</strong><p>Choose a 4-digit PIN. It will be required when opening this family member’s profile.</p></div></div>
+      <div class="family-field-section"><label for="setup-member-pin">4-digit PIN</label><div class="family-select-field"><span class="family-field-icon">${icon("shield")}</span><input id="setup-member-pin" name="pin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" minlength="4" maxlength="4" value="${esc(member.pin || "")}" required placeholder="Enter 4 digits"></div></div>
+      <div class="family-field-section"><label for="setup-member-pin-confirm">Confirm PIN</label><div class="family-select-field"><span class="family-field-icon">${icon("shield")}</span><input id="setup-member-pin-confirm" name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" minlength="4" maxlength="4" value="${esc(member.confirmPin || "")}" required placeholder="Enter it again"></div></div>
+      <div class="family-setup-footer"><button type="button" class="button outline" data-action="family-setup-back">Back</button><button type="submit" class="button primary">Set PIN</button></div>
     </form>`;
 }
 
@@ -520,7 +534,6 @@ function renderFamilySetupReview(draft) {
   const rows = draft.members.map((member, index) => `<article class="family-setup-member"><span class="family-setup-member-avatar tone-${index % 4}">${icon(member.role === "Student" ? "cap" : roleIcons[member.role] || "user")}</span><div class="family-setup-member-copy"><strong>${esc(member.name)}</strong><span>${esc(familySetupMemberDetail(member))}</span></div><button type="button" class="button lavender family-review-edit" data-action="family-setup-edit-member" data-index="${index}">Edit</button></article>`).join("");
   return `${familySetupTop("Review Family", "Make sure everything looks right before creating your family account.", 3)}
     <div class="family-setup-content">${familySetupSummary(draft)}<h2 class="family-setup-section-title">Family Members</h2><div class="family-setup-member-list review">${owner}${rows}</div>
-    <button type="button" class="button lavender wide family-add-member" data-action="family-setup-add-member">${icon("plus")}Add Another Member</button>
     <div class="family-setup-footer"><button type="button" class="button outline" data-action="family-setup-back">Back</button><button type="button" class="button primary" data-action="family-setup-create" ${isBusy ? "disabled" : ""}>${isBusy ? "Creating…" : "Create Family"}</button></div></div>`;
 }
 
@@ -530,6 +543,7 @@ function renderFamilySetup() {
   if (!canCreate) return `<section class="page family-setup-page"><div class="family-setup-top"><button class="family-setup-back" data-action="family-setup-exit">${icon("back")}<span>Back</span></button><div class="family-setup-heading"><h1>Link a Family Account</h1><p>Sign in with your independent school account and enter the invitation code from your family account holder.</p></div></div><form id="family-link-form" class="family-setup-content family-link-panel"><label for="setup-family-code">Family invitation code</label><input id="setup-family-code" name="code" required autocomplete="one-time-code" placeholder="Paste your invitation code"><button class="button primary wide" type="submit">Link My Existing Account</button></form></section>`;
   let content = familySetupView === "members" ? renderFamilySetupMembers(draft)
     : familySetupView === "member" ? renderFamilySetupMember(draft)
+      : familySetupView === "pin" ? renderFamilySetupPin(draft)
       : familySetupView === "review" ? renderFamilySetupReview(draft)
         : renderFamilySetupCreate(draft);
   return `<section class="page family-setup-page ${familySetupView === "create" ? "first-step" : ""}">${content}</section>`;
@@ -1242,10 +1256,18 @@ async function handleClick(event) {
       break;
     case "family": state.page = "family"; render(); break;
     case "family-setup-exit":
-      familySetupDraft = null; familySetupMemberDraft = null; familySetupEditingIndex = null; familySetupView = "create";
+      familySetupDraft = null; familySetupMemberDraft = null; familySetupEditingIndex = null; familySetupView = "create"; familySetupNextAfterPin = "members";
       state.page = "home"; state.activeTab = "settings"; render(); break;
     case "family-setup-back":
-      if (familySetupView === "member") { syncFamilySetupMemberDraft(); familySetupView = "members"; familySetupEditingIndex = null; }
+      if (familySetupView === "pin") {
+        const form = $("#family-setup-pin-form");
+        if (form) {
+          const data = new FormData(form);
+          familySetupMemberDraft = { ...(familySetupMemberDraft || {}), pin: String(data.get("pin") || ""), confirmPin: String(data.get("confirmPin") || "") };
+        }
+        familySetupView = "member";
+      }
+      else if (familySetupView === "member") { syncFamilySetupMemberDraft(); familySetupView = "members"; familySetupEditingIndex = null; }
       else if (familySetupView === "review") familySetupView = "members";
       else if (familySetupView === "members") familySetupView = "create";
       render(); break;
@@ -1253,14 +1275,14 @@ async function handleClick(event) {
     case "family-setup-review": familySetupView = "review"; render(); break;
     case "family-setup-add-member":
       familySetupMemberDraft = { name: "", role: "Student", grade: "", tribe: ensureFamilySetupDraft().tribe, accountType: "managed", email: "", pin: "", confirmPin: "" };
-      familySetupEditingIndex = null; familySetupView = "member"; render(); requestAnimationFrame(() => $("#setup-member-name")?.focus()); break;
+      familySetupEditingIndex = null; familySetupNextAfterPin = "members"; familySetupView = "member"; render(); requestAnimationFrame(() => $("#setup-member-name")?.focus()); break;
     case "family-setup-edit-family": familySetupView = "create"; render(); break;
     case "family-setup-edit-member": {
       const index = Number(target.dataset.index);
       const member = ensureFamilySetupDraft().members[index];
       if (!member) break;
       familySetupEditingIndex = index;
-      familySetupMemberDraft = { ...member };
+      familySetupMemberDraft = { ...member, pin: "", confirmPin: "" };
       familySetupView = "member"; render(); break;
     }
     case "family-setup-remove-member": {
@@ -1280,12 +1302,6 @@ async function handleClick(event) {
       syncFamilySetupMemberDraft();
       familySetupMemberDraft = { ...(familySetupMemberDraft || {}), accountType: target.dataset.type, pin: "", confirmPin: "" };
       render(); break;
-    case "family-setup-add-another": {
-      const form = $("#family-setup-member-form");
-      if (!form) break;
-      form.dataset.next = "another";
-      form.requestSubmit(); break;
-    }
     case "family-setup-toggle-link": familySetupLinkOpen = !familySetupLinkOpen; render(); break;
     case "family-setup-clear-name": {
       const input = $("#setup-family-name");
@@ -1636,24 +1652,37 @@ async function handleSubmit(event) {
     const tribe = String(data.get("tribe") || ensureFamilySetupDraft().tribe);
     const accountType = String(data.get("accountType") || familySetupMemberDraft?.accountType || "managed");
     const email = String(data.get("email") || "").trim();
-    const pin = String(data.get("pin") || "");
     if (!name) { showToast("Enter the family member’s full name."); return; }
     if (!familySetupRoles.includes(role)) { showToast("Choose a valid school role."); return; }
     if (["Teacher", "Presidency"].includes(role) && !isAdmin()) { showToast("Only a school Admin can assign Teacher or Presidency roles."); return; }
     if (accountType === "linked" && !email) { showToast("Enter the email used by the existing school account."); return; }
-    if (accountType === "managed" && !/^\d{4}$/.test(pin)) { showToast("Choose a four-digit PIN for this subaccount."); return; }
-    if (accountType === "managed" && pin !== String(data.get("confirmPin") || "")) { showToast("The PINs do not match."); return; }
-    const member = { name, role, grade, tribe, accountType, ...(accountType === "linked" ? { email } : { pin }) };
+    const next = event.submitter?.value || (accountType === "managed" ? "set-pin" : "list");
+    familySetupMemberDraft = { ...(familySetupMemberDraft || {}), name, role, grade, tribe, accountType, email };
+    if (accountType === "managed") {
+      familySetupNextAfterPin = next === "review" ? "review" : "members";
+      familySetupView = "pin";
+      render(); return;
+    }
+    const member = { name, role, grade, tribe, accountType, email };
     const index = familySetupEditingIndex;
     if (Number.isInteger(index)) ensureFamilySetupDraft().members[index] = member;
     else ensureFamilySetupDraft().members.push(member);
     familySetupMemberDraft = null; familySetupEditingIndex = null;
-    const next = event.submitter?.value || form.dataset.next || "list";
-    form.dataset.next = "";
-    if (next === "another") {
-      familySetupMemberDraft = { name: "", role: "Student", grade: "", tribe: ensureFamilySetupDraft().tribe, accountType: "managed", email: "", pin: "", confirmPin: "" };
-      familySetupView = "member";
-    } else familySetupView = next === "review" ? "review" : "members";
+    familySetupView = next === "review" ? "review" : "members";
+  } else if (form.id === "family-setup-pin-form") {
+    const pin = String(data.get("pin") || "");
+    const confirmPin = String(data.get("confirmPin") || "");
+    if (!/^\d{4}$/.test(pin)) { showToast("Enter a four-digit PIN."); return; }
+    if (pin !== confirmPin) { showToast("The PINs do not match."); return; }
+    if (!familySetupMemberDraft?.name) { showToast("Complete the family member’s profile first."); familySetupView = "member"; render(); return; }
+    const member = { ...familySetupMemberDraft, pin };
+    delete member.confirmPin;
+    const index = familySetupEditingIndex;
+    if (Number.isInteger(index)) ensureFamilySetupDraft().members[index] = member;
+    else ensureFamilySetupDraft().members.push(member);
+    familySetupMemberDraft = null; familySetupEditingIndex = null;
+    familySetupView = familySetupNextAfterPin === "review" ? "review" : "members";
+    familySetupNextAfterPin = "members";
     render();
   } else if (form.id === "family-pin-form") {
     const memberId = form.dataset.memberId;
@@ -1878,7 +1907,7 @@ document.addEventListener("change", (event) => {
 });
 
 async function boot() {
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=30").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js?v=31").catch(() => {});
   render();
   backend = await connectFirebase((user) => {
     pendingAuthUser = user;
